@@ -129,7 +129,7 @@ namespace MemoryClock
     internal sealed class Dashboard : IDisposable
     {
         internal readonly Window View;
-        private const string TimeHelp = "10–86400 秒 · 启用时一起保存";
+        private const string TimeHelp = "10–86400 秒 · 开启先清一次，完后重计";
         private readonly string settingsPath;
         private readonly bool admin;
         private readonly Func<Reading?> read;
@@ -458,7 +458,9 @@ namespace MemoryClock
             Text("ScheduleState", enabled ? "定时已启用" : "定时未启用");
             Find<Ellipse>("ScheduleDot").Fill = (Brush)View.Resources[enabled ? "Lime" : "Muted"];
             int? next = schedule.SecondsLeft(monotonic());
-            Text("Next", !enabled ? "下次清理：未启用" : next.HasValue ? "下次清理：" + next.Value + " 秒后" : "本轮正在清理…");
+            TextBlock nextLabel = Find<TextBlock>("Next");
+            nextLabel.Text = !enabled ? "下次清理：未启用" : next.HasValue ? "下次清理：" + next.Value + " 秒后" : "本轮正在清理…";
+            nextLabel.Foreground = (Brush)View.Resources[enabled ? "Amber" : "Muted"];
             arm.Content = enabled ? "暂停定时" : "启用定时";
             seconds.IsEnabled = gentle.IsEnabled = strong.IsEnabled = !enabled;
             arm.IsEnabled = enabled || !busy;

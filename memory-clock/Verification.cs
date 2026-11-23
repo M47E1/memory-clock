@@ -229,11 +229,18 @@ namespace MemoryClock
                         ((string)page.Find<RadioButton>("Strong").Content).Contains("额外腾出应用内存"), "Cleaning modes were not distinguished in plain language.");
                     WaitFor(() => page.Find<TextBlock>("PageFileSummary").Text.Contains("32 GB"));
                     page.Find<Button>("PageFileSettings").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Need(settingsOpened == 1 && page.Find<TextBlock>("PageFileHint").Text.Contains("高级"), "Page-file settings action was not routed.");
+                    var pageHint = page.Find<TextBlock>("PageFileHint");
+                    Need(settingsOpened == 1 && pageHint.Text.Contains("高级"), "Page-file settings action was not routed.");
+                    Need(object.ReferenceEquals(pageHint.Foreground, view.Resources["Muted"]),
+                        "PageFileHint must keep the Muted style foreground after ClearValue (set Style=Caption, not a local Foreground).");
+                    foreach (string wrapping in new[] { "Result", "TimeHint", "PageFileHint", "PageFileSummary" })
+                        Need(page.Find<TextBlock>(wrapping).TextWrapping == TextWrapping.Wrap,
+                            wrapping + " must wrap so long runtime messages do not clip in the compact layout.");
                     Refresh(view);
+                    Need(view.ActualWidth < 800 && view.ActualHeight < 580, "Default dashboard must stay compact.");
                     Need(((ScrollViewer)view.Content).ScrollableHeight == 0, "Dashboard needs scrolling at its default size.");
                     CheckPanelLayout(page);
-                    Capture((FrameworkElement)view.Content, Path.Combine(output, "dashboard.png"));
+                    Capture((FrameworkElement)view.Content, Path.Combine(output, "dashboard.png"), ((SolidColorBrush)view.Background).Color);
                     CheckCaption(view, output);
                     view.Width = 1120; view.Height = 800; CheckPanelLayout(page);
                     view.Width = view.MinWidth; view.Height = view.MinHeight; Refresh(view);
@@ -256,9 +263,9 @@ namespace MemoryClock
                     Window mini = page.CompactView;
                     Refresh(mini);
                     var clean = (Button)mini.FindName("Clean");
-                    Need(!view.IsVisible && mini.IsVisible && mini.ActualWidth < 125 && mini.ActualHeight < 145 &&
+                    Need(!view.IsVisible && mini.IsVisible && mini.ActualWidth <= 108 && mini.ActualHeight <= 128 &&
                         mini.Left == -10000 && mini.Top == -10000 && !mini.IsActive && !mini.Topmost,
-                        "Compact window did not replace the dashboard offscreen.");
+                        "Compact window did not replace the dashboard offscreen at compact size.");
                     Need((string)clean.Content == "Clean" && clean.IsTabStop &&
                         ((TextBlock)mini.FindName("Used")).Text == "10.0" &&
                         ((TextBlock)mini.FindName("Free")).Text == "6.0" &&
@@ -266,7 +273,7 @@ namespace MemoryClock
                         object.ReferenceEquals(((Image)mini.FindName("Dial")).Source, ring.Source) &&
                         ((TextBlock)mini.FindName("Status")).Text == "刚清理完",
                         "Compact view did not show the shared memory reading and Clean control.");
-                    Capture((FrameworkElement)mini.Content, Path.Combine(output, "compact.png"));
+                    Capture((FrameworkElement)mini.Content, Path.Combine(output, "compact.png"), ((SolidColorBrush)view.Background).Color);
                     followup = true;
                     elapsed = Stopwatch.Frequency * 29;
                     page.Tick();
@@ -324,14 +331,14 @@ namespace MemoryClock
             Need(done(), "Dashboard did not receive worker result.");
         }
 
-        private static void Capture(FrameworkElement root, string path)
+        private static void Capture(FrameworkElement root, string path, Color backdrop)
         {
             var bmp = new RenderTargetBitmap((int)Math.Ceiling(root.ActualWidth), (int)Math.Ceiling(root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
             var visual = new DrawingVisual();
             using (DrawingContext d = visual.RenderOpen())
             {
                 var rect = new Rect(0, 0, root.ActualWidth, root.ActualHeight);
-                d.DrawRectangle(new SolidColorBrush(Color.FromRgb(13, 20, 23)), null, rect);
+                d.DrawRectangle(new SolidColorBrush(backdrop), null, rect);
                 d.DrawRectangle(new VisualBrush(root) { ViewboxUnits = BrushMappingMode.Absolute, Viewbox = rect }, null, rect);
             }
             bmp.Render(visual);
