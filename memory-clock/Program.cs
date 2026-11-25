@@ -167,7 +167,7 @@ namespace MemoryClock
         private readonly Button arm, run;
         private readonly StartupEntry startupEntry;
         private readonly bool withTray;
-        private bool closing, busy, failed, fullscreenDeferred, compactMenuOpen;
+        private bool closing, busy, failed, fullscreenDeferred, compactMenuOpen, compactRocketLaunching, dashboardRocketLaunching;
         private Settings settings;
         private long? nextReading, cleanedUntil, lastPageFileRead, lastTopRead;
         private long lastFreedBytes, todayFreedBytes;
@@ -597,6 +597,7 @@ namespace MemoryClock
             Find<TextBlock>("Delta").Visibility = Visibility.Collapsed;
             SetResult(source + "清理中…");
             UpdateUI();
+            TriggerRocketLaunch();
             Task.Factory.StartNew(() =>
             {
                 try { return clean(chosen); }
@@ -671,7 +672,11 @@ namespace MemoryClock
             meter.Value = p;
             meter.Foreground = DialArt.MeterBrush(fraction);
             Find<Image>("MiniDial").Source = DialArt.Draw(fraction);
-            Find<System.Windows.Shapes.Path>("MiniStar").Fill = DialArt.AccentBrush(fraction);
+            Brush accent = DialArt.AccentBrush(fraction);
+            var miniHull = Find<System.Windows.Shapes.Path>("MiniRocketHull");
+            miniHull.Fill = accent;
+            miniHull.Stroke = accent;
+            Find<System.Windows.Shapes.Path>("MiniRocketFins").Stroke = accent;
             Text("Available", measurement.HasValue ? Gb(measurement.Value.Available) : "—");
             Text("Physical", measurement.HasValue ? Gb(measurement.Value.Total) : "—");
             Text("Commit", measurement.HasValue ? Gb(measurement.Value.Committed) + " / " + Gb(measurement.Value.CommitLimit) : "—");
@@ -811,7 +816,10 @@ namespace MemoryClock
                         PersistQuietly();
                     }
                 };
-                ((Button)compact.FindName("Clean")).Click += (sender, evt) => ManualClean();
+                var cleanButton = (Button)compact.FindName("Clean");
+                cleanButton.Click += (sender, evt) => ManualClean();
+                cleanButton.MouseEnter += (sender, evt) => NudgeCompactRocket(true);
+                cleanButton.MouseLeave += (sender, evt) => NudgeCompactRocket(false);
                 ((Button)compact.FindName("Expand")).Click += (sender, evt) => ShowWindow();
 
                 compact.MouseEnter += (sender, evt) => ApplyCompactOpacity(true);
@@ -831,7 +839,7 @@ namespace MemoryClock
                 ((MenuItem)compact.FindName("MenuExit")).Click += (sender, evt) => Exit();
 
                 compact.Closing += (sender, evt) => { if (!closing) { evt.Cancel = true; compact.Hide(); } };
-                compact.Closed += (sender, evt) => compact = null;
+                compact.Closed += (sender, evt) => { compactRocketLaunching = false; compact = null; };
                 PaintCompact();
                 UpdateCompact();
                 ApplyCompactOpacity(false);
@@ -840,8 +848,127 @@ namespace MemoryClock
             {
                 PlaceCompactSafely();
             }
-            if (View.IsVisible) View.Hide();
+            if (View.IsVisible)
+            {
+                ResetRocket(Find<Canvas>("MiniRocketGroup"), Find<TranslateTransform>("MiniRocketShift"), Find<UIElement>("MiniRocketFlame"), false);
+                View.Hide();
+            }
             compact.Show();
+            if (busy) TriggerRocketLaunch();
+        }
+
+        private void ResetRocket(Canvas group, TranslateTransform shift, UIElement flame, bool isCompact)
+        {
+            if (isCompact) compactRocketLaunching = false; else dashboardRocketLaunching = false;
+            if (shift != null)
+            {
+                shift.BeginAnimation(TranslateTransform.XProperty, null);
+                shift.BeginAnimation(TranslateTransform.YProperty, null);
+                shift.X = 0; shift.Y = 0;
+            }
+            if (group != null) { group.BeginAnimation(UIElement.OpacityProperty, null); group.Opacity = 1; }
+            if (flame != null) { flame.BeginAnimation(UIElement.OpacityProperty, null); flame.Opacity = 0; }
+        }
+
+        private void NudgeCompactRocket(bool hover)
+        {
+            if (!withTray || compact == null || compactRocketLaunching) return;
+            var shift = (TranslateTransform)compact.FindName("RocketShift");
+            if (shift == null) return;
+            if (!SystemParameters.ClientAreaAnimation)
+            {
+                if (!hover)
+                {
+                    shift.BeginAnimation(TranslateTransform.XProperty, null);
+                    shift.BeginAnimation(TranslateTransform.YProperty, null);
+                    shift.X = 0; shift.Y = 0;
+                }
+                return;
+            }
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            double targetX = hover ? 0.9 : 0.0;
+            double targetY = hover ? -0.9 : 0.0;
+            shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(targetX, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
+            shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(targetY, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
+        }
+
+        private void TriggerRocketLaunch()
+        {
+            if (!withTray || !SystemParameters.ClientAreaAnimation) return;
+            if (compact != null && compact.IsVisible)
+            {
+                LaunchRocket(
+                    (Canvas)compact.FindName("RocketGroup"),
+                    (TranslateTransform)compact.FindName("RocketShift"),
+                    (UIElement)compact.FindName("RocketFlame"),
+                    true);
+            }
+            if (View.IsVisible && View.WindowState != WindowState.Minimized)
+            {
+                LaunchRocket(
+                    Find<Canvas>("MiniRocketGroup"),
+                    Find<TranslateTransform>("MiniRocketShift"),
+                    Find<UIElement>("MiniRocketFlame"),
+                    false);
+            }
+        }
+
+        private void LaunchRocket(Canvas group, TranslateTransform shift, UIElement flame, bool isCompact)
+        {
+            if (group == null || shift == null || flame == null) return;
+            if (isCompact ? compactRocketLaunching : dashboardRocketLaunching) return;
+            if (isCompact) compactRocketLaunching = true; else dashboardRocketLaunching = true;
+
+            var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
+            var duration = TimeSpan.FromMilliseconds(820);
+
+            var xAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            xAnim.KeyFrames.Add(new EasingDoubleKeyFrame(-0.9, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(130)), easeOut));
+            xAnim.KeyFrames.Add(new EasingDoubleKeyFrame(6.8, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
+            xAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(-4.6, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(480))));
+            xAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var yAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.9, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(130)), easeOut));
+            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(-7.8, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
+            yAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(5.2, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(480))));
+            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var opAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            opAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(260))));
+            opAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450)), easeIn));
+            opAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(500))));
+            opAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var flameAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(90))));
+            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(0.6, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(190))));
+            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(290))));
+            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450))));
+            flameAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(duration)));
+
+            xAnim.Completed += (sender, evt) =>
+            {
+                if (isCompact) compactRocketLaunching = false; else dashboardRocketLaunching = false;
+                if (closing) return;
+                bool stillVisible = isCompact
+                    ? (compact != null && compact.IsVisible)
+                    : (View.IsVisible && View.WindowState != WindowState.Minimized);
+                if (busy && stillVisible && SystemParameters.ClientAreaAnimation)
+                {
+                    LaunchRocket(group, shift, flame, isCompact);
+                    return;
+                }
+                ResetRocket(group, shift, flame, isCompact);
+                if (isCompact && compact != null && ((Button)compact.FindName("Clean")).IsMouseOver)
+                    NudgeCompactRocket(true);
+            };
+
+            shift.BeginAnimation(TranslateTransform.XProperty, xAnim);
+            shift.BeginAnimation(TranslateTransform.YProperty, yAnim);
+            group.BeginAnimation(UIElement.OpacityProperty, opAnim);
+            flame.BeginAnimation(UIElement.OpacityProperty, flameAnim);
         }
 
         private void ApplyCompactOpacity(bool animate)
@@ -926,10 +1053,15 @@ namespace MemoryClock
 
         private void ShowWindow()
         {
-            if (compact != null && compact.IsVisible) compact.Hide();
+            if (compact != null && compact.IsVisible)
+            {
+                ResetRocket((Canvas)compact.FindName("RocketGroup"), (TranslateTransform)compact.FindName("RocketShift"), (UIElement)compact.FindName("RocketFlame"), true);
+                compact.Hide();
+            }
             if (!View.IsVisible) View.Show();
             if (View.WindowState == WindowState.Minimized) View.WindowState = WindowState.Normal;
             if (withTray) View.Activate();
+            if (busy) TriggerRocketLaunch();
         }
 
         private void Exit()

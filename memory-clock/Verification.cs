@@ -348,6 +348,9 @@ namespace MemoryClock
                         mini.Left == -10000 && mini.Top == -10000 && !mini.IsActive && !mini.Topmost,
                         "Compact window did not replace the dashboard offscreen at compact size.");
                     Need((string)clean.Content == "Clean" && clean.IsTabStop &&
+                        mini.FindName("RocketGroup") is Canvas && mini.FindName("RocketShift") is TranslateTransform &&
+                        mini.FindName("RocketFlame") is System.Windows.Shapes.Path &&
+                        page.Find<Canvas>("MiniRocketGroup") != null &&
                         ((TextBlock)mini.FindName("Used")).Text == "10.0" &&
                         ((TextBlock)mini.FindName("Free")).Text == "6.0" &&
                         ((TextBlock)mini.FindName("DialPercent")).Text == (.625).ToString("0%", System.Globalization.CultureInfo.InvariantCulture) &&
