@@ -8,9 +8,10 @@ $compiler = Join-Path $framework 'csc.exe'
 $wpf = Join-Path $framework 'WPF'
 $out = (New-Item -ItemType Directory -Path $OutputDirectory -Force).FullName
 $upstream = Join-Path (Split-Path $PSScriptRoot -Parent) 'engines\MemReduct'
-$sources = @('Schedule.cs','Memory.cs','PageFile.cs','DialArt.cs','StartupEntry.cs','Program.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$sources = @('Schedule.cs','Memory.cs','PageFile.cs','DialArt.cs','StartupEntry.cs','Updater.cs','Program.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 $options = @('/nologo','/optimize+','/platform:x64','/utf8output','/codepage:65001','/warnaserror+',
     '/reference:System.dll','/reference:System.Core.dll','/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.Management.dll',
+    '/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Runtime.Serialization.dll',
     "/reference:$framework\System.Xaml.dll",
     "/win32manifest:$PSScriptRoot\app.manifest", "/win32icon:$PSScriptRoot\clock.ico",
     "/resource:$PSScriptRoot\Dashboard.xaml,MemoryClock.Dashboard", "/resource:$PSScriptRoot\Compact.xaml,MemoryClock.Compact")
@@ -29,7 +30,7 @@ $file = [IO.File]::Open($sourceZip, [IO.FileMode]::Create)
 try {
     $zip = New-Object IO.Compression.ZipArchive($file, [IO.Compression.ZipArchiveMode]::Create, $true)
     try {
-        foreach ($name in @('Build.ps1','Dashboard.xaml','Compact.xaml','Memory.cs','PageFile.cs','DialArt.cs','StartupEntry.cs','Program.cs','Schedule.cs','Verification.cs','app.config','app.manifest','clock.ico','README.md')) {
+        foreach ($name in @('Build.ps1','Dashboard.xaml','Compact.xaml','Memory.cs','PageFile.cs','DialArt.cs','StartupEntry.cs','Updater.cs','Program.cs','Schedule.cs','Verification.cs','app.config','app.manifest','clock.ico','README.md')) {
             [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $PSScriptRoot $name), "memory-clock/$name")
         }
         foreach ($name in @('LICENSE','source-v.3.5.2.zip')) {

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -61,9 +62,10 @@ namespace MemoryClock
                 CheckEngine();
                 CheckPageFile();
                 CheckDialTiers();
+                CheckUpdater(Path.GetFullPath(args[0]));
                 CheckWindow(Path.GetFullPath(args[0]));
                 application.Shutdown();
-                Console.WriteLine("PASS: login startup, dual auto-clean (interval/threshold), fullscreen defer, load colors, top-3 tooltip, compact menu/position/opacity, and page-file settings. Cleaning was simulated.");
+                Console.WriteLine("PASS: login startup, dual auto-clean, fullscreen defer, load colors, rocket dial, top-3 tooltip, compact menu/position/opacity, auto-updater, and page-file settings. Cleaning was simulated.");
                 return 0;
             }
             catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -80,6 +82,88 @@ namespace MemoryClock
                  !object.ReferenceEquals(DialArt.MeterBrush(0.6), DialArt.MeterBrush(0.85)) &&
                  !object.ReferenceEquals(DialArt.MeterBrush(0.85), DialArt.MeterBrush(0.95)),
                 "Load-tier brushes must be distinct.");
+        }
+
+        private static void CheckUpdater(string output)
+        {
+            Need(Updater.CurrentDisplayVersion == "v1.6.0", "Unexpected assembly version: " + Updater.CurrentDisplayVersion);
+            Need(Updater.IsNewer(Updater.ParseReleaseVersion("v1.6.1"), new Version(1, 6, 0, 0)), "Newer release tag was not detected.");
+            Need(!Updater.IsNewer(Updater.ParseReleaseVersion("v1.6.0"), new Version(1, 6, 0, 0)), "Same release tag triggered update.");
+            Need(!Updater.IsNewer(Updater.ParseReleaseVersion("v1.5.9"), new Version(1, 6, 0, 0)), "Older release tag triggered downgrade.");
+
+            Need(Updater.IsOfficialAssetUrl("https://github.com/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip"),
+                "Official GitHub portable asset URL was rejected.");
+            Need(Updater.IsAllowedRedirectUri(new Uri("https://objects.githubusercontent.com/github-production-release-asset/123")) &&
+                 Updater.IsAllowedRedirectUri(new Uri("https://release-assets.githubusercontent.com/github-production-release-asset/123")) &&
+                 !Updater.IsAllowedRedirectUri(new Uri("http://objects.githubusercontent.com/x")) &&
+                 !Updater.IsAllowedRedirectUri(new Uri("https://evil.example/file.zip")),
+                "Redirect allowlist validation failed.");
+            foreach (string bad in new[]
+            {
+                "http://github.com/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip",
+                "https://evil.example/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip",
+                "https://github.com/other/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip",
+                "https://github.com/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-source.zip"
+            })
+            {
+                Need(!Updater.IsOfficialAssetUrl(bad), "Untrusted update URL was accepted: " + bad);
+            }
+
+            string shaGood = new string('a', 64);
+            string validJson = "{\"tag_name\":\"v1.7.0\",\"html_url\":\"https://github.com/M47E1/memory-clock/releases/tag/v1.7.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{\"name\":\"MemoryClock-portable.zip\",\"browser_download_url\":\"https://github.com/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip\",\"size\":250000,\"digest\":\"sha256:" + shaGood + "\"}]}";
+            UpdateInfo parsed = Updater.ParseReleaseJson(validJson, new Version(1, 6, 0, 0));
+            Need(parsed != null && parsed.DisplayVersion == "v1.7.0" && parsed.ExpectedSha256 == shaGood, "Valid release JSON was not parsed.");
+            Need(Updater.ParseReleaseJson(validJson, new Version(1, 7, 0, 0)) == null, "Already-latest release returned an update.");
+            Need(Updater.ParseReleaseJson(validJson.Replace("\"draft\":false", "\"draft\":true"), new Version(1, 6, 0, 0)) == null, "Draft release was accepted.");
+            Need(Updater.ParseReleaseJson(validJson.Replace("\"prerelease\":false", "\"prerelease\":true"), new Version(1, 6, 0, 0)) == null, "Prerelease was accepted.");
+
+            string sandbox = Path.Combine(output, "updater-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sandbox);
+            try
+            {
+                // Zip-slip rejection
+                string evilZip = Path.Combine(sandbox, "evil.zip");
+                using (var archive = ZipFile.Open(evilZip, ZipArchiveMode.Create))
+                {
+                    var entry = archive.CreateEntry("../escape.txt");
+                    using (var w = new StreamWriter(entry.Open())) w.Write("bad");
+                }
+                bool blocked = false;
+                try { Updater.ExtractVerifiedPackage(evilZip, Path.Combine(sandbox, "s1"), new Version(1, 5, 0, 0), new Version(1, 6, 0, 0)); }
+                catch (InvalidDataException) { blocked = true; }
+                Need(blocked, "Zip-slip entry was not rejected.");
+
+                // Valid portable zip containing current VerifyClock.exe (1.6.0.0)
+                string goodZip = Path.Combine(sandbox, "good.zip");
+                string selfExe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                using (var archive = ZipFile.Open(goodZip, ZipArchiveMode.Create))
+                    archive.CreateEntryFromFile(selfExe, "MemoryClock.exe");
+                string actualSha = Updater.ComputeSha256Hex(goodZip);
+
+                // Bad digest must be rejected
+                bool badHashBlocked = false;
+                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "sBadHash"), new Version(1, 5, 0, 0), new Version(1, 6, 0, 0), new string('0', 64)); }
+                catch (InvalidDataException) { badHashBlocked = true; }
+                Need(badHashBlocked, "Mismatched SHA-256 digest was accepted.");
+
+                // Same version must be rejected to prevent update loops
+                bool sameBlocked = false;
+                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "s2"), new Version(1, 6, 0, 0), new Version(1, 6, 0, 0), actualSha); }
+                catch (InvalidOperationException) { sameBlocked = true; }
+                Need(sameBlocked, "Same-version package was allowed to overwrite.");
+
+                // Mismatched expected tag version (1.7.0.0 tag vs 1.6.0.0 binary) must be rejected
+                bool mismatchBlocked = false;
+                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "sMis"), new Version(1, 5, 0, 0), new Version(1, 7, 0, 0), actualSha); }
+                catch (InvalidOperationException) { mismatchBlocked = true; }
+                Need(mismatchBlocked, "Binary version mismatching release tag was allowed.");
+
+                // Older baseline (1.5.0.0) accepts verified 1.6.0.0 package matching tag and SHA-256
+                string stageOk = Path.Combine(sandbox, "s3");
+                Updater.ExtractVerifiedPackage(goodZip, stageOk, new Version(1, 5, 0, 0), new Version(1, 6, 0, 0), actualSha);
+                Need(File.Exists(Path.Combine(stageOk, "MemoryClock.exe")), "Verified package did not extract MemoryClock.exe.");
+            }
+            finally { Directory.Delete(sandbox, true); }
         }
 
         private static void CheckSchedule()
@@ -253,6 +337,9 @@ namespace MemoryClock
             ulong availableGb = 6;
             long elapsed = 0;
             int settingsOpened = 0;
+            UpdateInfo mockRemoteUpdate = null;
+            int updateApplies = 0;
+            string lastUpdateRelaunchArg = null;
             string key = @"Software\MemoryClock.Test." + Guid.NewGuid().ToString("N");
             string exe = Path.Combine(temp, "test app", "MemoryClock.exe");
             var startup = new StartupEntry(exe, key);
@@ -268,13 +355,16 @@ namespace MemoryClock
                         new Reading { Total = 16UL << 30, Available = 6UL << 30 });
                 },
                 null, false, () => elapsed, () => "C: · 已分配 32 GB · 设定上限 64 GB", () => settingsOpened++, startup,
-                () => fullscreen, () => "当前占用内存前三\n1. chrome · 4.20 GB（12 个进程）\n2. Code · 1.85 GB（6 个进程）\n3. WeChat · 420 MB"))
+                () => fullscreen, () => "当前占用内存前三\n1. chrome · 4.20 GB（12 个进程）\n2. Code · 1.85 GB（6 个进程）\n3. WeChat · 420 MB",
+                () => mockRemoteUpdate, (info, relaunchArg) => { Interlocked.Increment(ref updateApplies); lastUpdateRelaunchArg = relaunchArg; }))
             {
                 Window view = page.View;
                 view.WindowStartupLocation = WindowStartupLocation.Manual;
                 view.Left = -10000; view.Top = -10000; view.Topmost = false; view.ShowActivated = false;
                 view.ShowInTaskbar = false;
-                Need(Program.IsTrayLaunch(new[] { "--tray" }) && !Program.IsTrayLaunch(new[] { "--tray", "clean" }), "Unexpected tray arguments.");
+                Need(Program.IsTrayLaunch(new[] { "--tray" }) && !Program.IsTrayLaunch(new[] { "--tray", "clean" }) &&
+                    Program.IsCompactLaunch(new[] { "--compact" }) && !Program.IsCompactLaunch(new[] { "--compact", "extra" }),
+                    "Unexpected tray or compact arguments.");
                 Program.Present(page, true, null);
                 page.Tick();
                 Need(!view.IsVisible && page.CompactView == null && executed == 0, "Tray startup opened a window or cleaned.");
@@ -409,15 +499,19 @@ namespace MemoryClock
                     ((Button)mini.FindName("Expand")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Need(view.IsVisible && !mini.IsVisible, "Expand did not restore the dashboard.");
 
-                    // Legacy v1 and v2 migrations
+                    // Legacy v1, v2, and v3 migrations
                     File.WriteAllLines(settingsPath, new[] { "1", "Strong", "12:30, 22:30" });
                     Settings migratedV1 = Settings.Load(settingsPath);
-                    Need(migratedV1.Mode == CleanMode.Strong && migratedV1.Seconds == 500 && migratedV1.Trigger == AutoTrigger.Interval,
+                    Need(migratedV1.Mode == CleanMode.Strong && migratedV1.Seconds == 500 && migratedV1.Trigger == AutoTrigger.Interval && migratedV1.AutoUpdate,
                         "v1 settings migration failed.");
                     File.WriteAllLines(settingsPath, new[] { "2", "Strong", "180" });
                     Settings migratedV2 = Settings.Load(settingsPath);
-                    Need(migratedV2.Mode == CleanMode.Strong && migratedV2.Seconds == 180 && migratedV2.SubtleOpacity && migratedV2.PauseOnFullscreen,
+                    Need(migratedV2.Mode == CleanMode.Strong && migratedV2.Seconds == 180 && migratedV2.SubtleOpacity && migratedV2.PauseOnFullscreen && migratedV2.AutoUpdate,
                         "v2 settings migration failed.");
+                    File.WriteAllLines(settingsPath, new[] { "3", "Strong", "180", "Threshold", "82", "1", "0", "100,200" });
+                    Settings migratedV3 = Settings.Load(settingsPath);
+                    Need(migratedV3.Trigger == AutoTrigger.Threshold && migratedV3.Threshold == 82 && !migratedV3.PauseOnFullscreen && migratedV3.AutoUpdate,
+                        "v3 settings migration failed.");
 
                     // Strong mode direct execution (no popup) + Threshold trigger + high-load color preview
                     fail = false;
@@ -429,7 +523,7 @@ namespace MemoryClock
                     arm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Settings thSaved = Settings.Load(settingsPath);
                     Need(thSaved.Mode == CleanMode.Strong && thSaved.Trigger == AutoTrigger.Threshold && thSaved.Threshold == 85 &&
-                        File.ReadAllLines(settingsPath)[0] == "3", "Threshold settings were not saved in v3 format.");
+                        File.ReadAllLines(settingsPath)[0] == "4", "Threshold settings were not saved in v4 format.");
                     Need(executed == 4 && page.Find<TextBlock>("ScheduleState").Text == "监控已启用" &&
                         page.Find<TextBlock>("Next").Text.Contains("85%"), "Threshold armed below limit should wait without cleaning.");
                     CheckPanelLayout(page);
@@ -465,6 +559,29 @@ namespace MemoryClock
                     page.Find<Button>("Clean").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     WaitFor(() => executed == 6 && actual == CleanMode.Strong && page.Find<Button>("Clean").IsEnabled);
                     Need(Settings.Load(settingsPath).Mode == CleanMode.Strong, "Manual clean did not persist selected mode.");
+
+                    // One-click update & startup auto-update verification (offline mocked)
+                    var updateBtn = page.Find<Button>("UpdateButton");
+                    mockRemoteUpdate = null;
+                    updateBtn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    WaitFor(() => ((string)updateBtn.Content).Contains("已是最新"));
+                    mockRemoteUpdate = new UpdateInfo(new Version(1, 7, 0, 0), "v1.7.0",
+                        "https://github.com/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip",
+                        "https://github.com/M47E1/memory-clock/releases/tag/v1.7.0", 250000);
+                    page.CheckForUpdateAsync(true, false);
+                    WaitFor(() => ((string)updateBtn.Content) == "一键更新 v1.7.0");
+                    updateBtn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    WaitFor(() => updateApplies == 1 && lastUpdateRelaunchArg == "");
+                    // Startup auto-install path applies immediately without needing a click
+                    page.CheckForUpdateAsync(false, true);
+                    WaitFor(() => updateApplies == 2);
+                    // Compact context menu AutoUpdate toggle persists
+                    var menuAutoUpdate = (MenuItem)mini.FindName("MenuAutoUpdate");
+                    Need(menuAutoUpdate.IsChecked, "AutoUpdate should default to enabled.");
+                    menuAutoUpdate.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Need(!Settings.Load(settingsPath).AutoUpdate, "MenuAutoUpdate did not persist toggle off.");
+                    menuAutoUpdate.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Need(Settings.Load(settingsPath).AutoUpdate, "MenuAutoUpdate did not persist toggle on.");
                 }
                 finally { view.Close(); }
             }

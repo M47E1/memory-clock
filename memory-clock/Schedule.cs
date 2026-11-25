@@ -25,11 +25,12 @@ namespace MemoryClock
         internal readonly AutoTrigger Trigger;
         internal readonly bool SubtleOpacity;
         internal readonly bool PauseOnFullscreen;
+        internal readonly bool AutoUpdate;
         internal readonly double? CompactLeft;
         internal readonly double? CompactTop;
 
         private Settings(int seconds, int threshold, CleanMode mode, AutoTrigger trigger,
-            bool subtleOpacity, bool pauseOnFullscreen, double? compactLeft, double? compactTop)
+            bool subtleOpacity, bool pauseOnFullscreen, bool autoUpdate, double? compactLeft, double? compactTop)
         {
             Seconds = seconds;
             Threshold = threshold;
@@ -37,13 +38,14 @@ namespace MemoryClock
             Trigger = trigger;
             SubtleOpacity = subtleOpacity;
             PauseOnFullscreen = pauseOnFullscreen;
+            AutoUpdate = autoUpdate;
             CompactLeft = compactLeft;
             CompactTop = compactTop;
         }
 
         internal static Settings Default
         {
-            get { return new Settings(DefaultSeconds, DefaultThreshold, CleanMode.Gentle, AutoTrigger.Interval, true, true, null, null); }
+            get { return new Settings(DefaultSeconds, DefaultThreshold, CleanMode.Gentle, AutoTrigger.Interval, true, true, true, null, null); }
         }
 
         internal string Display { get { return Seconds.ToString(CultureInfo.InvariantCulture); } }
@@ -51,25 +53,28 @@ namespace MemoryClock
         internal string ActiveValueDisplay { get { return Trigger == AutoTrigger.Threshold ? ThresholdDisplay : Display; } }
 
         internal Settings WithMode(CleanMode mode)
-        { return new Settings(Seconds, Threshold, mode, Trigger, SubtleOpacity, PauseOnFullscreen, CompactLeft, CompactTop); }
+        { return new Settings(Seconds, Threshold, mode, Trigger, SubtleOpacity, PauseOnFullscreen, AutoUpdate, CompactLeft, CompactTop); }
 
         internal Settings WithTrigger(AutoTrigger trigger)
-        { return new Settings(Seconds, Threshold, Mode, trigger, SubtleOpacity, PauseOnFullscreen, CompactLeft, CompactTop); }
+        { return new Settings(Seconds, Threshold, Mode, trigger, SubtleOpacity, PauseOnFullscreen, AutoUpdate, CompactLeft, CompactTop); }
 
         internal Settings WithSeconds(int seconds)
-        { return new Settings(seconds, Threshold, Mode, Trigger, SubtleOpacity, PauseOnFullscreen, CompactLeft, CompactTop); }
+        { return new Settings(seconds, Threshold, Mode, Trigger, SubtleOpacity, PauseOnFullscreen, AutoUpdate, CompactLeft, CompactTop); }
 
         internal Settings WithThreshold(int threshold)
-        { return new Settings(Seconds, threshold, Mode, Trigger, SubtleOpacity, PauseOnFullscreen, CompactLeft, CompactTop); }
+        { return new Settings(Seconds, threshold, Mode, Trigger, SubtleOpacity, PauseOnFullscreen, AutoUpdate, CompactLeft, CompactTop); }
 
         internal Settings WithSubtleOpacity(bool enabled)
-        { return new Settings(Seconds, Threshold, Mode, Trigger, enabled, PauseOnFullscreen, CompactLeft, CompactTop); }
+        { return new Settings(Seconds, Threshold, Mode, Trigger, enabled, PauseOnFullscreen, AutoUpdate, CompactLeft, CompactTop); }
 
         internal Settings WithPauseOnFullscreen(bool enabled)
-        { return new Settings(Seconds, Threshold, Mode, Trigger, SubtleOpacity, enabled, CompactLeft, CompactTop); }
+        { return new Settings(Seconds, Threshold, Mode, Trigger, SubtleOpacity, enabled, AutoUpdate, CompactLeft, CompactTop); }
+
+        internal Settings WithAutoUpdate(bool enabled)
+        { return new Settings(Seconds, Threshold, Mode, Trigger, SubtleOpacity, PauseOnFullscreen, enabled, CompactLeft, CompactTop); }
 
         internal Settings WithCompactLocation(double left, double top)
-        { return new Settings(Seconds, Threshold, Mode, Trigger, SubtleOpacity, PauseOnFullscreen, left, top); }
+        { return new Settings(Seconds, Threshold, Mode, Trigger, SubtleOpacity, PauseOnFullscreen, AutoUpdate, left, top); }
 
         internal static int ParseSeconds(string input)
         {
@@ -122,16 +127,19 @@ namespace MemoryClock
                 if (lines.Length != 3) throw new FormatException("设置文件格式有误，请重新保存。");
                 return Default.WithMode(mode).WithSeconds(ParseSeconds(lines[2]));
             }
-            if (lines[0] == "3")
+            if (lines[0] == "3" || lines[0] == "4")
             {
-                if (lines.Length != 8 || (lines[3] != "Interval" && lines[3] != "Threshold") ||
-                    (lines[5] != "0" && lines[5] != "1") || (lines[6] != "0" && lines[6] != "1"))
+                bool v4 = lines[0] == "4";
+                if (lines.Length != (v4 ? 9 : 8) || (lines[3] != "Interval" && lines[3] != "Threshold") ||
+                    (lines[5] != "0" && lines[5] != "1") || (lines[6] != "0" && lines[6] != "1") ||
+                    (v4 && lines[8] != "0" && lines[8] != "1"))
                     throw new FormatException("设置文件格式有误，请重新保存。");
                 int seconds = ParseSeconds(lines[2]);
                 AutoTrigger trigger = lines[3] == "Threshold" ? AutoTrigger.Threshold : AutoTrigger.Interval;
                 int threshold = ParseThreshold(lines[4]);
                 bool subtleOpacity = lines[5] == "1";
                 bool pauseOnFullscreen = lines[6] == "1";
+                bool autoUpdate = !v4 || lines[8] == "1";
                 double? left = null, top = null;
                 if (!string.IsNullOrWhiteSpace(lines[7]))
                 {
@@ -145,7 +153,7 @@ namespace MemoryClock
                         throw new FormatException("设置文件格式有误，请重新保存。");
                     left = parsedLeft; top = parsedTop;
                 }
-                return new Settings(seconds, threshold, mode, trigger, subtleOpacity, pauseOnFullscreen, left, top);
+                return new Settings(seconds, threshold, mode, trigger, subtleOpacity, pauseOnFullscreen, autoUpdate, left, top);
             }
             throw new FormatException("设置文件格式有误，请重新保存。");
         }
@@ -162,14 +170,15 @@ namespace MemoryClock
             {
                 File.WriteAllLines(temp, new[]
                 {
-                    "3",
+                    "4",
                     Mode.ToString(),
                     Display,
                     Trigger.ToString(),
                     ThresholdDisplay,
                     SubtleOpacity ? "1" : "0",
                     PauseOnFullscreen ? "1" : "0",
-                    location
+                    location,
+                    AutoUpdate ? "1" : "0"
                 }, new UTF8Encoding(false));
                 if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
             }

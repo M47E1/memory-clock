@@ -137,6 +137,8 @@
                 <MenuItem x:Name="MenuAuto" Header="启用自动清理"/>
                 <MenuItem x:Name="MenuSubtle" Header="待机微透明" IsCheckable="True"/>
                 <MenuItem x:Name="MenuFullscreen" Header="全屏时自动避让" IsCheckable="True"/>
+                <MenuItem x:Name="MenuAutoUpdate" Header="启动自动更新" IsCheckable="True"/>
+                <MenuItem x:Name="MenuUpdate" Header="检查更新"/>
                 <Separator/>
                 <MenuItem x:Name="MenuExpand" Header="展开主界面"/>
                 <MenuItem x:Name="MenuExit" Header="退出"/>

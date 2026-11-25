@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -24,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Memory Clock")]
 [assembly: AssemblyDescription("Windows memory cleaner based on Mem Reduct · GNU GPLv3")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 [assembly: TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
 namespace MemoryClock
@@ -91,10 +92,13 @@ namespace MemoryClock
         internal static bool IsTrayLaunch(string[] args)
         { return args.Length == 1 && args[0] == StartupEntry.TrayOption; }
 
-        internal static void Present(Dashboard dashboard, bool trayOnly, LaunchRequest request)
+        internal static bool IsCompactLaunch(string[] args)
+        { return args.Length == 1 && args[0] == "--compact"; }
+
+        internal static void Present(Dashboard dashboard, bool trayOnly, LaunchRequest request, bool compactOnly = false)
         {
             if (trayOnly) return;
-            if (request != null && request.Compact) dashboard.ShowCompact(); else dashboard.View.Show();
+            if (compactOnly || (request != null && request.Compact)) dashboard.ShowCompact(); else dashboard.View.Show();
             if (request != null) dashboard.View.Dispatcher.BeginInvoke(new Action(() => dashboard.ApplyRequest(request)));
         }
 
@@ -103,8 +107,9 @@ namespace MemoryClock
         {
             LaunchRequest request = args.Length == 0 ? null : LaunchRequest.Parse(args);
             bool trayOnly = IsTrayLaunch(args);
+            bool compactOnly = IsCompactLaunch(args);
             bool admin = WindowsMemory.IsAdmin();
-            if (args.Length != 0 && !trayOnly && (request == null || !admin)) return 2;
+            if (args.Length != 0 && !trayOnly && !compactOnly && (request == null || !admin)) return 2;
             string sid;
             using (WindowsIdentity id = WindowsIdentity.GetCurrent()) sid = id.User.Value;
             string scope = @"Local\MemoryClock-1-" + sid;
@@ -125,7 +130,7 @@ namespace MemoryClock
                         {
                             application.SessionEnding += (sender, evt) => dashboard.AllowShutdown();
                             application.MainWindow = dashboard.View;
-                            Present(dashboard, trayOnly, request);
+                            Present(dashboard, trayOnly, request, compactOnly);
                             return application.Run();
                         }
                     }
@@ -154,20 +159,26 @@ namespace MemoryClock
         private readonly Action openPageFileSettings;
         private readonly Func<bool> isFullscreen;
         private readonly Func<string> readTopProcesses;
+        private readonly Func<UpdateInfo> checkUpdate;
+        private readonly Action<UpdateInfo, string> applyUpdate;
         private readonly Func<long> monotonic;
         private readonly EventWaitHandle show;
         private readonly IntervalTimer schedule = new IntervalTimer();
         private readonly DispatcherTimer timer;
+        private readonly DispatcherTimer startupUpdateTimer;
         private readonly Forms.NotifyIcon tray;
-        private readonly Forms.ToolStripMenuItem trayClean, trayPause, trayFullscreen;
+        private readonly Forms.ToolStripMenuItem trayClean, trayPause, trayFullscreen, trayAutoUpdate, trayUpdate;
         private readonly System.Drawing.Icon icon;
         private readonly TextBox seconds;
         private readonly TextBlock triggerUnit;
         private readonly RadioButton gentle, strong, triggerInterval, triggerThreshold;
-        private readonly Button arm, run;
+        private readonly Button arm, run, updateButton;
         private readonly StartupEntry startupEntry;
         private readonly bool withTray;
         private bool closing, busy, failed, fullscreenDeferred, compactMenuOpen, compactRocketLaunching, dashboardRocketLaunching;
+        private bool checkingUpdate, installingUpdate, updateUpToDate, pendingAutoInstall;
+        private UpdateInfo availableUpdate;
+        private string updateError;
         private Settings settings;
         private long? nextReading, cleanedUntil, lastPageFileRead, lastTopRead;
         private long lastFreedBytes, todayFreedBytes;
@@ -180,7 +191,8 @@ namespace MemoryClock
 
         internal Dashboard(string path, bool admin, Func<Reading?> read, Func<CleanMode, CleanResult> clean, EventWaitHandle show, bool withTray,
             Func<long> monotonic = null, Func<string> readPageFile = null, Action openPageFileSettings = null, StartupEntry startupEntry = null,
-            Func<bool> isFullscreen = null, Func<string> readTopProcesses = null)
+            Func<bool> isFullscreen = null, Func<string> readTopProcesses = null,
+            Func<UpdateInfo> checkUpdate = null, Action<UpdateInfo, string> applyUpdate = null)
         {
             this.admin = admin; settingsPath = path; this.read = read; this.clean = clean; this.show = show; this.withTray = withTray;
             this.monotonic = monotonic ?? Stopwatch.GetTimestamp;
@@ -189,6 +201,10 @@ namespace MemoryClock
             this.startupEntry = startupEntry ?? new StartupEntry(Assembly.GetExecutingAssembly().Location);
             this.isFullscreen = isFullscreen ?? WindowsMemory.IsFullscreenBusy;
             this.readTopProcesses = readTopProcesses ?? (() => WindowsMemory.ReadTopProcesses(3));
+            this.checkUpdate = checkUpdate ?? (() => Updater.CheckLatest());
+            this.applyUpdate = applyUpdate ?? ((info, relaunchArg) =>
+                Updater.ApplyOnlineUpdate(info, System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
+                    Process.GetCurrentProcess().Id, relaunchArg));
 
             using (Stream layout = typeof(Dashboard).Assembly.GetManifestResourceStream("MemoryClock.Dashboard"))
                 View = (Window)XamlReader.Load(layout);
@@ -208,6 +224,7 @@ namespace MemoryClock
             triggerThreshold = Find<RadioButton>("TriggerThreshold");
             arm = Find<Button>("Arm");
             run = Find<Button>("Clean");
+            updateButton = Find<Button>("UpdateButton");
 
             string error = null;
             try { settings = Settings.Load(path); }
@@ -228,6 +245,7 @@ namespace MemoryClock
             };
             arm.Click += (sender, evt) => ToggleSchedule();
             run.Click += (sender, evt) => ManualClean();
+            updateButton.Click += (sender, evt) => TriggerUpdateAction();
             Find<Button>("Compact").Click += (sender, evt) => ShowCompact();
             Find<Button>("PageFileSettings").Click += (sender, evt) => OpenPageFileSettings();
 
@@ -259,6 +277,10 @@ namespace MemoryClock
                 trayFullscreen = new Forms.ToolStripMenuItem("全屏时自动避让") { CheckOnClick = true, Checked = settings.PauseOnFullscreen };
                 trayFullscreen.Click += (sender, evt) => SetPauseOnFullscreen(trayFullscreen.Checked);
                 tray.ContextMenuStrip.Items.Add(trayFullscreen);
+                trayAutoUpdate = new Forms.ToolStripMenuItem("启动自动更新") { CheckOnClick = true, Checked = settings.AutoUpdate };
+                trayAutoUpdate.Click += (sender, evt) => SetAutoUpdate(trayAutoUpdate.Checked);
+                tray.ContextMenuStrip.Items.Add(trayAutoUpdate);
+                trayUpdate = (Forms.ToolStripMenuItem)tray.ContextMenuStrip.Items.Add("检查更新", null, (sender, evt) => TriggerUpdateAction());
                 tray.ContextMenuStrip.Items.Add(new Forms.ToolStripSeparator());
                 tray.ContextMenuStrip.Items.Add("退出", null, (sender, evt) => Exit());
                 tray.DoubleClick += (sender, evt) => ShowWindow();
@@ -272,7 +294,20 @@ namespace MemoryClock
             timer.Tick += (sender, evt) => Tick();
             UpdateUI();
             PaintMemory(read());
-            if (withTray) timer.Start();
+            if (withTray)
+            {
+                timer.Start();
+                if (settings.AutoUpdate)
+                {
+                    startupUpdateTimer = new DispatcherTimer(DispatcherPriority.Background, View.Dispatcher) { Interval = TimeSpan.FromSeconds(4) };
+                    startupUpdateTimer.Tick += (sender, evt) =>
+                    {
+                        startupUpdateTimer.Stop();
+                        if (settings.AutoUpdate) CheckForUpdateAsync(false, true);
+                    };
+                    startupUpdateTimer.Start();
+                }
+            }
         }
 
         internal T Find<T>(string name) where T : class { return (T)View.FindName(name); }
@@ -325,6 +360,181 @@ namespace MemoryClock
             PersistQuietly();
             if (trayFullscreen != null) trayFullscreen.Checked = enabled;
             UpdateUI();
+        }
+
+        private void SetAutoUpdate(bool enabled)
+        {
+            settings = settings.WithAutoUpdate(enabled);
+            if (!enabled) pendingAutoInstall = false;
+            PersistQuietly();
+            if (trayAutoUpdate != null) trayAutoUpdate.Checked = enabled;
+            UpdateUpdateUI();
+        }
+
+        internal void TriggerUpdateAction()
+        {
+            if (availableUpdate != null) InstallAvailableUpdateAsync();
+            else CheckForUpdateAsync(true, false);
+        }
+
+        internal void CheckForUpdateAsync(bool userInitiated, bool allowAutoInstall)
+        {
+            if (closing || checkingUpdate || installingUpdate) return;
+            checkingUpdate = true;
+            updateError = null;
+            updateUpToDate = false;
+            UpdateUpdateUI();
+            Task.Factory.StartNew(() =>
+            {
+                try { return Tuple.Create(checkUpdate(), (string)null); }
+                catch (Exception ex) { return Tuple.Create((UpdateInfo)null, FriendlyUpdateError(ex)); }
+            }).ContinueWith(task =>
+            {
+                if (View.Dispatcher.HasShutdownStarted) return;
+                View.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    checkingUpdate = false;
+                    if (closing) return;
+                    if (task.Result.Item2 != null)
+                    {
+                        if (userInitiated) updateError = task.Result.Item2;
+                        UpdateUpdateUI();
+                        return;
+                    }
+                    availableUpdate = task.Result.Item1;
+                    if (availableUpdate != null)
+                    {
+                        if (allowAutoInstall && settings.AutoUpdate)
+                        {
+                            if (busy) pendingAutoInstall = true;
+                            else
+                            {
+                                InstallAvailableUpdateAsync();
+                                return;
+                            }
+                        }
+                    }
+                    else if (userInitiated)
+                    {
+                        updateUpToDate = true;
+                    }
+                    UpdateUpdateUI();
+                }));
+            });
+        }
+
+        internal void InstallAvailableUpdateAsync()
+        {
+            if (closing || installingUpdate || availableUpdate == null) return;
+            if (busy)
+            {
+                updateError = "正在清理内存，请等本轮结束后再更新。";
+                UpdateUpdateUI();
+                return;
+            }
+            UpdateInfo target = availableUpdate;
+            string relaunchArg = compact != null && compact.IsVisible ? "--compact"
+                : !View.IsVisible ? StartupEntry.TrayOption : "";
+            pendingAutoInstall = false;
+            installingUpdate = true;
+            updateError = null;
+            UpdateUI();
+            Task.Factory.StartNew(() =>
+            {
+                try { applyUpdate(target, relaunchArg); return (string)null; }
+                catch (Exception ex) { return FriendlyUpdateError(ex); }
+            }).ContinueWith(task =>
+            {
+                if (View.Dispatcher.HasShutdownStarted) return;
+                View.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (closing) return;
+                    if (task.Result == null)
+                    {
+                        if (withTray)
+                        {
+                            closing = true;
+                            View.Close();
+                        }
+                        else
+                        {
+                            installingUpdate = false;
+                            UpdateUI();
+                        }
+                        return;
+                    }
+                    installingUpdate = false;
+                    updateError = task.Result;
+                    UpdateUI();
+                }));
+            });
+        }
+
+        private static string FriendlyUpdateError(Exception ex)
+        {
+            if (ex is WebException) return "连不上 GitHub，请稍后再试。";
+            return string.IsNullOrWhiteSpace(ex.Message) ? "更新未完成，请稍后再试。" : ex.Message;
+        }
+
+        private void UpdateUpdateUI()
+        {
+            string ver = Updater.CurrentDisplayVersion;
+            updateButton.IsEnabled = !checkingUpdate && !installingUpdate;
+            if (installingUpdate && availableUpdate != null)
+            {
+                updateButton.Content = "正在更新 " + availableUpdate.DisplayVersion + "…";
+                updateButton.Background = (Brush)View.Resources["Panel"];
+                updateButton.Foreground = (Brush)View.Resources["Amber"];
+                updateButton.ToolTip = "正在下载并安装最新版本，完成后将自动重启。";
+            }
+            else if (checkingUpdate)
+            {
+                updateButton.Content = "检查更新中…";
+                updateButton.Background = Brushes.Transparent;
+                updateButton.Foreground = (Brush)View.Resources["Muted"];
+                updateButton.ToolTip = "正在检查 GitHub 最新版本…";
+            }
+            else if (availableUpdate != null)
+            {
+                updateButton.Content = "一键更新 " + availableUpdate.DisplayVersion;
+                updateButton.Background = (Brush)View.Resources["Lime"];
+                updateButton.Foreground = (Brush)View.Resources["MemoryInk"];
+                updateButton.ToolTip = updateError != null
+                    ? updateError + "（点击重试一键更新）"
+                    : "发现新版本 " + availableUpdate.DisplayVersion + "，点击自动下载替换并重启。";
+            }
+            else if (updateError != null)
+            {
+                updateButton.Content = ver + " · 检查失败";
+                updateButton.Background = Brushes.Transparent;
+                updateButton.Foreground = Brushes.LightSalmon;
+                updateButton.ToolTip = updateError;
+            }
+            else if (updateUpToDate)
+            {
+                updateButton.Content = ver + " · 已是最新";
+                updateButton.Background = Brushes.Transparent;
+                updateButton.Foreground = (Brush)View.Resources["Muted"];
+                updateButton.ToolTip = "当前已是 GitHub 最新版本，点击可再次检查。";
+            }
+            else
+            {
+                updateButton.Content = ver + " · 检查更新";
+                updateButton.Background = Brushes.Transparent;
+                updateButton.Foreground = (Brush)View.Resources["Muted"];
+                updateButton.ToolTip = settings.AutoUpdate
+                    ? "点击立即检查更新；已开启启动自动更新。"
+                    : "点击立即检查更新；启动自动更新已关闭。";
+            }
+            if (trayUpdate != null)
+            {
+                trayUpdate.Enabled = !checkingUpdate && !installingUpdate;
+                trayUpdate.Text = installingUpdate && availableUpdate != null
+                    ? "正在更新 " + availableUpdate.DisplayVersion + "…"
+                    : availableUpdate != null ? "一键更新到 " + availableUpdate.DisplayVersion : "检查更新";
+            }
+            if (trayAutoUpdate != null) trayAutoUpdate.Checked = settings.AutoUpdate;
+            UpdateCompactMenu();
         }
 
         private void PersistQuietly()
@@ -437,7 +647,7 @@ namespace MemoryClock
 
         private void ManualClean()
         {
-            if (busy) return;
+            if (busy || installingUpdate) return;
             settings = settings.WithMode(Selected);
             PersistQuietly();
             RequestClean(false, settings);
@@ -569,7 +779,7 @@ namespace MemoryClock
                 nextReading = null;
             }
             double? usedPercent = measurement.HasValue ? (double?)(measurement.Value.UsedFraction * 100.0) : null;
-            if (!busy && schedule.IsDue(now, usedPercent))
+            if (!busy && !installingUpdate && schedule.IsDue(now, usedPercent))
             {
                 if (settings.PauseOnFullscreen && isFullscreen())
                 {
@@ -590,7 +800,7 @@ namespace MemoryClock
 
         private void StartClean(CleanMode chosen, string source)
         {
-            if (!admin || closing || busy) return;
+            if (!admin || closing || busy || installingUpdate) return;
             schedule.Started();
             busy = true; failed = false; fullscreenDeferred = false; nextReading = null; cleanedUntil = null; lastFreedBytes = 0;
             Text("Before", "—"); Text("After", "—"); Text("Later", "—");
@@ -651,6 +861,8 @@ namespace MemoryClock
             string pauseNote = stopped ? (schedule.Trigger == AutoTrigger.Threshold ? "；监控已暂停。" : "；定时已暂停。") : "";
             SetResult(DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) + " · " + source + " · " + outcome.Summary + daily + pauseNote);
             UpdateUI();
+            if (pendingAutoInstall && settings.AutoUpdate && availableUpdate != null && !closing)
+                InstallAvailableUpdateAsync();
         }
 
         private static string Gb(ulong bytes) { return (bytes / 1073741824.0).ToString("0.00", CultureInfo.InvariantCulture) + " GB"; }
@@ -724,16 +936,17 @@ namespace MemoryClock
                 ? (thresholdActive ? "暂停监控" : "暂停定时")
                 : (thresholdSelected ? "启用监控" : "启用定时");
             seconds.IsEnabled = gentle.IsEnabled = strong.IsEnabled = triggerInterval.IsEnabled = triggerThreshold.IsEnabled = !enabled;
-            arm.IsEnabled = enabled || !busy;
-            run.IsEnabled = !busy;
+            arm.IsEnabled = enabled || (!busy && !installingUpdate);
+            run.IsEnabled = !busy && !installingUpdate;
             if (admin) run.Content = busy ? "正在清理…" : "立即清理";
-            if (trayClean != null) trayClean.Enabled = !busy;
+            if (trayClean != null) trayClean.Enabled = !busy && !installingUpdate;
             if (trayPause != null)
             {
                 trayPause.Enabled = enabled;
                 trayPause.Text = thresholdActive ? "暂停监控" : "暂停自动清理";
             }
             if (trayFullscreen != null) trayFullscreen.Checked = settings.PauseOnFullscreen;
+            UpdateUpdateUI();
             UpdateCompact();
         }
 
@@ -835,6 +1048,8 @@ namespace MemoryClock
                 ((MenuItem)compact.FindName("MenuAuto")).Click += (sender, evt) => ToggleSchedule();
                 ((MenuItem)compact.FindName("MenuSubtle")).Click += (sender, evt) => SetSubtleOpacity(!settings.SubtleOpacity);
                 ((MenuItem)compact.FindName("MenuFullscreen")).Click += (sender, evt) => SetPauseOnFullscreen(!settings.PauseOnFullscreen);
+                ((MenuItem)compact.FindName("MenuAutoUpdate")).Click += (sender, evt) => SetAutoUpdate(!settings.AutoUpdate);
+                ((MenuItem)compact.FindName("MenuUpdate")).Click += (sender, evt) => TriggerUpdateAction();
                 ((MenuItem)compact.FindName("MenuExpand")).Click += (sender, evt) => ShowWindow();
                 ((MenuItem)compact.FindName("MenuExit")).Click += (sender, evt) => Exit();
 
@@ -1007,7 +1222,7 @@ namespace MemoryClock
         {
             if (compact == null) return;
             bool enabled = schedule.Active;
-            ((MenuItem)compact.FindName("MenuClean")).IsEnabled = !busy;
+            ((MenuItem)compact.FindName("MenuClean")).IsEnabled = !busy && !installingUpdate;
             var mGentle = (MenuItem)compact.FindName("MenuGentle");
             var mStrong = (MenuItem)compact.FindName("MenuStrong");
             mGentle.IsChecked = Selected == CleanMode.Gentle;
@@ -1020,13 +1235,19 @@ namespace MemoryClock
                 : (SelectedTrigger == AutoTrigger.Threshold ? "启用占用监控" : "启用定时清理");
             ((MenuItem)compact.FindName("MenuSubtle")).IsChecked = settings.SubtleOpacity;
             ((MenuItem)compact.FindName("MenuFullscreen")).IsChecked = settings.PauseOnFullscreen;
+            ((MenuItem)compact.FindName("MenuAutoUpdate")).IsChecked = settings.AutoUpdate;
+            var mUpdate = (MenuItem)compact.FindName("MenuUpdate");
+            mUpdate.IsEnabled = !checkingUpdate && !installingUpdate;
+            mUpdate.Header = installingUpdate && availableUpdate != null
+                ? "正在更新 " + availableUpdate.DisplayVersion + "…"
+                : availableUpdate != null ? "一键更新到 " + availableUpdate.DisplayVersion : "检查更新";
         }
 
         private void UpdateCompact()
         {
             if (compact == null) return;
             var button = (Button)compact.FindName("Clean");
-            button.IsEnabled = !busy;
+            button.IsEnabled = !busy && !installingUpdate;
             button.ToolTip = admin ? "立即清理内存" : "授权后立即清理内存";
             var status = (TextBlock)compact.FindName("Status");
             bool justCleaned = cleanedUntil.HasValue && monotonic() < cleanedUntil.Value;
@@ -1066,7 +1287,7 @@ namespace MemoryClock
 
         private void Exit()
         {
-            if (busy) { SetResult("正在清理，请等本轮结束再退出。"); return; }
+            if (busy || installingUpdate) { SetResult(installingUpdate ? "正在更新，请稍候完成。" : "正在清理，请等本轮结束再退出。"); return; }
             closing = true; View.Close();
         }
 
@@ -1075,6 +1296,7 @@ namespace MemoryClock
         public void Dispose()
         {
             timer.Stop();
+            if (startupUpdateTimer != null) startupUpdateTimer.Stop();
             closing = true;
             if (compact != null) compact.Close();
             if (tray != null) { tray.Visible = false; tray.ContextMenuStrip.Dispose(); tray.Dispose(); icon.Dispose(); }
