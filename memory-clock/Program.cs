@@ -338,11 +338,6 @@ namespace MemoryClock
         internal void ApplyRequest(LaunchRequest request)
         {
             if (!admin || busy || closing || (request.Enable && schedule.Active)) return;
-            if (request.Choice.Mode == CleanMode.Strong &&
-                !Confirm(request.Enable ? "启用强力定时" : "立即强力清理", request.Enable
-                    ? "开启会立即整理所有应用的工作集，之后按间隔重复。应用可能暂时变慢。要启用吗？"
-                    : "这会整理所有应用的工作集，使用中的应用可能暂时变慢。现在清理吗？")) return;
-            if (busy || closing || (request.Enable && schedule.Active)) return;
             if (request.Enable)
             {
                 settings = request.Choice;
@@ -359,11 +354,6 @@ namespace MemoryClock
         private void GentleOrStrong(CleanMode mode)
         {
             if (mode == CleanMode.Strong) strong.IsChecked = true; else gentle.IsChecked = true;
-        }
-        private bool Confirm(string title, string text)
-        {
-            return MessageBox.Show(compact != null && compact.IsVisible ? compact : View, text, title,
-                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
         }
         private void Elevate(LaunchRequest request)
         {

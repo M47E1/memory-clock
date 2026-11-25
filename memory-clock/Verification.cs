@@ -307,10 +307,15 @@ namespace MemoryClock
                     Settings migrated = Settings.Load(settingsPath);
                     Need(migrated.Mode == CleanMode.Strong && migrated.Seconds == 500, "Old settings did not preserve mode with the new default interval.");
                     fail = false;
+                    page.Find<RadioButton>("Strong").IsChecked = true;
                     seconds.Text = "120"; arm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Need(Settings.Load(settingsPath).Seconds == 120 && File.ReadAllLines(settingsPath)[0] == "2", "Existing settings could not be replaced.");
-                    WaitFor(() => executed == 5 && page.Find<TextBlock>("After").Text == "6.00 GB" &&
+                    Settings strongSaved = Settings.Load(settingsPath);
+                    Need(strongSaved.Mode == CleanMode.Strong && strongSaved.Seconds == 120 && File.ReadAllLines(settingsPath)[0] == "2",
+                        "Strong schedule could not be saved without a confirmation popup.");
+                    WaitFor(() => executed == 5 && actual == CleanMode.Strong && page.Find<TextBlock>("After").Text == "6.00 GB" &&
                         page.Find<TextBlock>("Next").Text.Contains("120 秒后"));
+                    page.Find<Button>("Clean").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    WaitFor(() => executed == 6 && actual == CleanMode.Strong);
                 }
                 finally { view.Close(); }
             }
