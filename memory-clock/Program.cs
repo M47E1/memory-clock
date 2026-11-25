@@ -5,16 +5,19 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
@@ -23,6 +26,7 @@ using Forms = System.Windows.Forms;
 [assembly: AssemblyDescription("Windows memory cleaner based on Mem Reduct · GNU GPLv3")]
 [assembly: AssemblyVersion("1.5.0.0")]
 [assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
 namespace MemoryClock
 {
@@ -56,17 +60,27 @@ namespace MemoryClock
         { Enable = enable; Compact = compact; Choice = choice; }
 
         internal string Arguments
-        { get { return "--elevated " + (Enable ? "enable" : "clean") + " " + Choice.Mode + " " + Choice.Display + " " + (Compact ? "compact" : "full"); } }
+        {
+            get
+            {
+                return "--elevated " + (Enable ? "enable" : "clean") + " " + Choice.Mode + " " +
+                    Choice.Trigger + " " + Choice.ActiveValueDisplay + " " + (Compact ? "compact" : "full");
+            }
+        }
 
         internal static LaunchRequest Parse(string[] args)
         {
-            if (args.Length != 5 || args[0] != "--elevated" ||
-                (args[1] != "enable" && args[1] != "clean") || (args[2] != "Gentle" && args[2] != "Strong") ||
-                (args[4] != "compact" && args[4] != "full")) return null;
+            if (args.Length != 6 || args[0] != "--elevated" ||
+                (args[1] != "enable" && args[1] != "clean") ||
+                (args[2] != "Gentle" && args[2] != "Strong") ||
+                (args[3] != "Interval" && args[3] != "Threshold") ||
+                (args[5] != "compact" && args[5] != "full")) return null;
             try
             {
-                return new LaunchRequest(args[1] == "enable", args[4] == "compact",
-                    Settings.Parse(args[3], args[2] == "Strong" ? CleanMode.Strong : CleanMode.Gentle));
+                CleanMode mode = args[2] == "Strong" ? CleanMode.Strong : CleanMode.Gentle;
+                AutoTrigger trigger = args[3] == "Threshold" ? AutoTrigger.Threshold : AutoTrigger.Interval;
+                return new LaunchRequest(args[1] == "enable", args[5] == "compact",
+                    Settings.Default.ParseFor(trigger, args[4], mode));
             }
             catch (FormatException) { return null; }
         }
@@ -129,41 +143,53 @@ namespace MemoryClock
     internal sealed class Dashboard : IDisposable
     {
         internal readonly Window View;
-        private const string TimeHelp = "10–86400 秒 · 开启先清一次，完后重计";
+        internal const double SubtleIdleOpacity = 0.88;
+        private const string IntervalHelp = "10–86400 秒 · 开启先清一次，完后重计";
+        private const string ThresholdHelp = "50–95% · 超过后自动清，间隔 60 秒";
         private readonly string settingsPath;
         private readonly bool admin;
         private readonly Func<Reading?> read;
         private readonly Func<CleanMode, CleanResult> clean;
         private readonly Func<string> readPageFile;
         private readonly Action openPageFileSettings;
+        private readonly Func<bool> isFullscreen;
+        private readonly Func<string> readTopProcesses;
         private readonly Func<long> monotonic;
         private readonly EventWaitHandle show;
         private readonly IntervalTimer schedule = new IntervalTimer();
         private readonly DispatcherTimer timer;
         private readonly Forms.NotifyIcon tray;
-        private readonly Forms.ToolStripMenuItem trayPause;
+        private readonly Forms.ToolStripMenuItem trayClean, trayPause, trayFullscreen;
         private readonly System.Drawing.Icon icon;
         private readonly TextBox seconds;
-        private readonly RadioButton gentle, strong;
+        private readonly TextBlock triggerUnit;
+        private readonly RadioButton gentle, strong, triggerInterval, triggerThreshold;
         private readonly Button arm, run;
         private readonly StartupEntry startupEntry;
         private readonly bool withTray;
-        private bool closing, busy, failed;
+        private bool closing, busy, failed, fullscreenDeferred, compactMenuOpen;
         private Settings settings;
-        private long? nextReading, cleanedUntil, lastPageFileRead;
-        private bool readingPageFile;
+        private long? nextReading, cleanedUntil, lastPageFileRead, lastTopRead;
+        private long lastFreedBytes, todayFreedBytes;
+        private DateTime todayDate = DateTime.Today;
+        private bool readingPageFile, readingTop;
+        private string topProcessSummary = "正在读取占用内存前三的程序…";
         private Window compact;
         private Reading? currentMemory;
         private string resultMessage;
 
         internal Dashboard(string path, bool admin, Func<Reading?> read, Func<CleanMode, CleanResult> clean, EventWaitHandle show, bool withTray,
-            Func<long> monotonic = null, Func<string> readPageFile = null, Action openPageFileSettings = null, StartupEntry startupEntry = null)
+            Func<long> monotonic = null, Func<string> readPageFile = null, Action openPageFileSettings = null, StartupEntry startupEntry = null,
+            Func<bool> isFullscreen = null, Func<string> readTopProcesses = null)
         {
             this.admin = admin; settingsPath = path; this.read = read; this.clean = clean; this.show = show; this.withTray = withTray;
             this.monotonic = monotonic ?? Stopwatch.GetTimestamp;
             this.readPageFile = readPageFile ?? PageFile.ReadSummary;
             this.openPageFileSettings = openPageFileSettings ?? PageFile.OpenSettings;
             this.startupEntry = startupEntry ?? new StartupEntry(Assembly.GetExecutingAssembly().Location);
+            this.isFullscreen = isFullscreen ?? WindowsMemory.IsFullscreenBusy;
+            this.readTopProcesses = readTopProcesses ?? (() => WindowsMemory.ReadTopProcesses(3));
+
             using (Stream layout = typeof(Dashboard).Assembly.GetManifestResourceStream("MemoryClock.Dashboard"))
                 View = (Window)XamlReader.Load(layout);
             View.SourceInitialized += (sender, evt) => WindowCaption.Apply(View);
@@ -173,14 +199,29 @@ namespace MemoryClock
             };
             SystemParameters.StaticPropertyChanged += contrastChanged;
             View.Closed += (sender, evt) => SystemParameters.StaticPropertyChanged -= contrastChanged;
-            seconds = Find<TextBox>("Seconds"); gentle = Find<RadioButton>("Gentle"); strong = Find<RadioButton>("Strong");
-            arm = Find<Button>("Arm"); run = Find<Button>("Clean");
+
+            seconds = Find<TextBox>("Seconds");
+            triggerUnit = Find<TextBlock>("TriggerUnit");
+            gentle = Find<RadioButton>("Gentle");
+            strong = Find<RadioButton>("Strong");
+            triggerInterval = Find<RadioButton>("TriggerInterval");
+            triggerThreshold = Find<RadioButton>("TriggerThreshold");
+            arm = Find<Button>("Arm");
+            run = Find<Button>("Clean");
+
             string error = null;
             try { settings = Settings.Load(path); }
             catch (Exception issue) { settings = Settings.Default; error = issue.Message; }
-            seconds.Text = settings.Display;
+
             if (settings.Mode == CleanMode.Strong) strong.IsChecked = true; else gentle.IsChecked = true;
-            seconds.TextChanged += (sender, evt) => SetHint(TimeHelp, false);
+            if (settings.Trigger == AutoTrigger.Threshold) triggerThreshold.IsChecked = true; else triggerInterval.IsChecked = true;
+            SyncTriggerFields();
+
+            gentle.Click += (sender, evt) => OnModeClicked(CleanMode.Gentle);
+            strong.Click += (sender, evt) => OnModeClicked(CleanMode.Strong);
+            triggerInterval.Click += (sender, evt) => SwitchTrigger(AutoTrigger.Interval);
+            triggerThreshold.Click += (sender, evt) => SwitchTrigger(AutoTrigger.Threshold);
+            seconds.TextChanged += (sender, evt) => SetHint(ActiveHelp, false);
             seconds.KeyDown += (sender, evt) =>
             {
                 if (evt.Key == Key.Enter && !schedule.Active) { evt.Handled = true; ToggleSchedule(); }
@@ -189,6 +230,11 @@ namespace MemoryClock
             run.Click += (sender, evt) => ManualClean();
             Find<Button>("Compact").Click += (sender, evt) => ShowCompact();
             Find<Button>("PageFileSettings").Click += (sender, evt) => OpenPageFileSettings();
+
+            var memoryBlock = Find<Border>("MemoryBlock");
+            memoryBlock.MouseEnter += (sender, evt) => RefreshTopProcesses();
+            memoryBlock.ToolTipOpening += (sender, evt) => RefreshTopProcesses();
+
             var startup = Find<CheckBox>("Startup");
             startup.Click += (sender, evt) =>
             {
@@ -199,19 +245,28 @@ namespace MemoryClock
             View.Loaded += (sender, evt) => RefreshPageFile();
             View.Activated += (sender, evt) => { RefreshPageFile(); RefreshStartup(); };
             RefreshStartup();
+
             if (withTray)
             {
                 icon = System.Drawing.Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
                 tray = new Forms.NotifyIcon { Icon = icon, Text = "内存时钟", ContextMenuStrip = new Forms.ContextMenuStrip() };
-                tray.ContextMenuStrip.Items.Add("打开内存时钟", null, (sender, evt) => ShowWindow());
-                trayPause = (Forms.ToolStripMenuItem)tray.ContextMenuStrip.Items.Add("暂停定时", null, (sender, evt) => Pause());
+                var openItem = tray.ContextMenuStrip.Items.Add("打开主界面", null, (sender, evt) => ShowWindow());
+                openItem.Font = new System.Drawing.Font(openItem.Font, System.Drawing.FontStyle.Bold);
+                tray.ContextMenuStrip.Items.Add("迷你表盘", null, (sender, evt) => ShowCompact());
+                tray.ContextMenuStrip.Items.Add(new Forms.ToolStripSeparator());
+                trayClean = (Forms.ToolStripMenuItem)tray.ContextMenuStrip.Items.Add("立即清理", null, (sender, evt) => ManualClean());
+                trayPause = (Forms.ToolStripMenuItem)tray.ContextMenuStrip.Items.Add("暂停自动清理", null, (sender, evt) => Pause());
+                trayFullscreen = new Forms.ToolStripMenuItem("全屏时自动避让") { CheckOnClick = true, Checked = settings.PauseOnFullscreen };
+                trayFullscreen.Click += (sender, evt) => SetPauseOnFullscreen(trayFullscreen.Checked);
+                tray.ContextMenuStrip.Items.Add(trayFullscreen);
+                tray.ContextMenuStrip.Items.Add(new Forms.ToolStripSeparator());
                 tray.ContextMenuStrip.Items.Add("退出", null, (sender, evt) => Exit());
                 tray.DoubleClick += (sender, evt) => ShowWindow();
                 tray.Visible = true;
                 View.Closing += (sender, evt) => { if (!closing) { evt.Cancel = true; View.Hide(); } };
             }
             if (error != null) SetHint(error, true);
-            Text("Permission", admin ? "已授权 · 关闭窗口后留在托盘" : "首次清理或启用定时时，需要管理员授权。");
+            Text("Permission", admin ? "已授权 · 关闭窗口后留在托盘" : "首次清理或启用自动清理时，需要管理员授权。");
             if (!admin) run.Content = "授权清理";
             timer = new DispatcherTimer(DispatcherPriority.Background, View.Dispatcher) { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += (sender, evt) => Tick();
@@ -221,6 +276,63 @@ namespace MemoryClock
         }
 
         internal T Find<T>(string name) where T : class { return (T)View.FindName(name); }
+        private CleanMode Selected { get { return strong.IsChecked == true ? CleanMode.Strong : CleanMode.Gentle; } }
+        private AutoTrigger SelectedTrigger { get { return triggerThreshold.IsChecked == true ? AutoTrigger.Threshold : AutoTrigger.Interval; } }
+        private string ActiveHelp { get { return SelectedTrigger == AutoTrigger.Threshold ? ThresholdHelp : IntervalHelp; } }
+
+        private void SyncTriggerFields()
+        {
+            bool threshold = SelectedTrigger == AutoTrigger.Threshold;
+            seconds.MaxLength = threshold ? 2 : 5;
+            seconds.Text = threshold ? settings.ThresholdDisplay : settings.Display;
+            triggerUnit.Text = threshold ? "%" : "秒";
+            AutomationProperties.SetName(seconds, threshold ? "自动清理占用百分比" : "清理间隔（秒）");
+            AutomationProperties.SetHelpText(seconds, threshold ? "输入 50 至 95 之间的整数百分比" : "输入 10 至 86400 之间的整数");
+            SetHint(ActiveHelp, false);
+        }
+
+        private void SwitchTrigger(AutoTrigger trigger)
+        {
+            if (schedule.Active) return;
+            if (trigger == AutoTrigger.Threshold) triggerThreshold.IsChecked = true; else triggerInterval.IsChecked = true;
+            settings = settings.WithTrigger(trigger);
+            SyncTriggerFields();
+            PersistQuietly();
+            UpdateUI();
+        }
+
+        private void OnModeClicked(CleanMode mode)
+        {
+            if (schedule.Active) return;
+            GentleOrStrong(mode);
+            settings = settings.WithMode(mode);
+            PersistQuietly();
+            UpdateCompactMenu();
+        }
+
+        private void SetSubtleOpacity(bool enabled)
+        {
+            settings = settings.WithSubtleOpacity(enabled);
+            PersistQuietly();
+            ApplyCompactOpacity(false);
+            UpdateCompactMenu();
+        }
+
+        private void SetPauseOnFullscreen(bool enabled)
+        {
+            settings = settings.WithPauseOnFullscreen(enabled);
+            if (!enabled) fullscreenDeferred = false;
+            PersistQuietly();
+            if (trayFullscreen != null) trayFullscreen.Checked = enabled;
+            UpdateUI();
+        }
+
+        private void PersistQuietly()
+        {
+            try { settings.Save(settingsPath); }
+            catch { }
+        }
+
         private void RefreshStartup()
         {
             var control = Find<CheckBox>("Startup");
@@ -236,8 +348,9 @@ namespace MemoryClock
                 control.IsChecked = false; control.IsEnabled = false; control.ToolTip = "无法读取当前用户的 Windows 启动项。";
             }
         }
+
         private void Text(string name, string value) { Find<TextBlock>(name).Text = value; }
-        private CleanMode Selected { get { return strong.IsChecked == true ? CleanMode.Strong : CleanMode.Gentle; } }
+
         private void SetHint(string message, bool error)
         {
             TextBlock hint = Find<TextBlock>("TimeHint");
@@ -246,11 +359,13 @@ namespace MemoryClock
             seconds.BorderBrush = error ? Brushes.LightSalmon : Brushes.Transparent;
             if (error) Announce(hint);
         }
+
         private static void Announce(TextBlock block)
         {
             AutomationPeer peer = UIElementAutomationPeer.FromElement(block);
             if (peer != null) peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
         }
+
         private void SetResult(string message)
         {
             resultMessage = message;
@@ -258,38 +373,74 @@ namespace MemoryClock
             Announce(Find<TextBlock>("Result"));
         }
 
-        private bool SaveInterval()
+        private bool SaveAutoConfig()
         {
             if (schedule.Active) return false;
             try
             {
-                Settings chosen = Settings.Parse(seconds.Text, Selected);
-                chosen.Save(settingsPath); settings = chosen; seconds.Text = chosen.Display;
-                SetHint(TimeHelp, false);
+                Settings chosen = settings.ParseFor(SelectedTrigger, seconds.Text, Selected);
+                chosen.Save(settingsPath);
+                settings = chosen;
+                seconds.Text = chosen.ActiveValueDisplay;
+                SetHint(ActiveHelp, false);
                 return true;
             }
             catch (Exception error) { SetHint(error.Message, true); seconds.Focus(); return false; }
         }
+
         private void ToggleSchedule()
         {
             if (schedule.Active) { Pause(); return; }
-            if (busy || !SaveInterval()) return;
+            if (busy) return;
+            if (!SaveAutoConfig())
+            {
+                if (compact != null && compact.IsVisible) ShowWindow();
+                return;
+            }
             RequestClean(true, settings);
         }
+
         private void Arm()
         {
             if (!admin || busy || closing || schedule.Active) return;
-            schedule.Arm(settings, monotonic());
-            SetHint(TimeHelp, false);
-            StartClean(settings.Mode, "定时");
+            long now = monotonic();
+            schedule.Arm(settings, now);
+            fullscreenDeferred = false;
+            SetHint(ActiveHelp, false);
+            if (settings.Trigger == AutoTrigger.Interval)
+            {
+                if (settings.PauseOnFullscreen && isFullscreen())
+                {
+                    fullscreenDeferred = true;
+                    UpdateUI();
+                }
+                else StartClean(settings.Mode, "定时");
+            }
+            else
+            {
+                double? used = currentMemory.HasValue ? (double?)(currentMemory.Value.UsedFraction * 100.0) : null;
+                if (schedule.IsDue(now, used))
+                {
+                    if (settings.PauseOnFullscreen && isFullscreen()) fullscreenDeferred = true;
+                    else StartClean(settings.Mode, "监控");
+                }
+                UpdateUI();
+            }
         }
+
         internal void Pause()
         {
-            schedule.Pause(); UpdateUI();
+            schedule.Pause();
+            fullscreenDeferred = false;
+            UpdateUI();
         }
+
         private void ManualClean()
         {
-            if (!busy) RequestClean(false, settings.WithMode(Selected));
+            if (busy) return;
+            settings = settings.WithMode(Selected);
+            PersistQuietly();
+            RequestClean(false, settings);
         }
 
         private void RefreshPageFile()
@@ -313,6 +464,29 @@ namespace MemoryClock
             });
         }
 
+        internal void RefreshTopProcesses()
+        {
+            long now = monotonic();
+            if (closing || readingTop || (lastTopRead.HasValue && now - lastTopRead.Value < 3 * Stopwatch.Frequency)) return;
+            readingTop = true;
+            Task.Factory.StartNew(() =>
+            {
+                try { return readTopProcesses(); }
+                catch { return "暂时无法读取进程占用"; }
+            }).ContinueWith(task =>
+            {
+                if (!View.Dispatcher.HasShutdownStarted)
+                    View.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        readingTop = false;
+                        lastTopRead = monotonic();
+                        topProcessSummary = task.Result;
+                        Find<Border>("MemoryBlock").ToolTip = topProcessSummary;
+                        if (compact != null) ((Border)compact.FindName("CardRoot")).ToolTip = topProcessSummary;
+                    }));
+            });
+        }
+
         private void OpenPageFileSettings()
         {
             var hint = Find<TextBlock>("PageFileHint");
@@ -330,31 +504,39 @@ namespace MemoryClock
             }
             Announce(hint);
         }
+
         private void RequestClean(bool enable, Settings choice)
         {
             var request = new LaunchRequest(enable, compact != null && compact.IsVisible, choice);
             if (admin) ApplyRequest(request); else Elevate(request);
         }
+
         internal void ApplyRequest(LaunchRequest request)
         {
             if (!admin || busy || closing || (request.Enable && schedule.Active)) return;
             if (request.Enable)
             {
-                settings = request.Choice;
-                seconds.Text = settings.Display;
+                settings = request.Choice.Trigger == AutoTrigger.Threshold
+                    ? settings.WithMode(request.Choice.Mode).WithTrigger(AutoTrigger.Threshold).WithThreshold(request.Choice.Threshold)
+                    : settings.WithMode(request.Choice.Mode).WithTrigger(AutoTrigger.Interval).WithSeconds(request.Choice.Seconds);
+                if (settings.Trigger == AutoTrigger.Threshold) triggerThreshold.IsChecked = true; else triggerInterval.IsChecked = true;
                 GentleOrStrong(settings.Mode);
+                SyncTriggerFields();
                 Arm();
             }
             else
             {
+                settings = settings.WithMode(request.Choice.Mode);
                 GentleOrStrong(request.Choice.Mode);
                 StartClean(request.Choice.Mode, "手动");
             }
         }
+
         private void GentleOrStrong(CleanMode mode)
         {
             if (mode == CleanMode.Strong) strong.IsChecked = true; else gentle.IsChecked = true;
         }
+
         private void Elevate(LaunchRequest request)
         {
             try
@@ -377,22 +559,42 @@ namespace MemoryClock
         internal void Tick()
         {
             if (show != null && show.WaitOne(0)) ShowWindow();
+            if (DateTime.Today != todayDate) { todayDate = DateTime.Today; todayFreedBytes = 0; }
+            long now = monotonic();
             Reading? measurement = read();
             PaintMemory(measurement);
-            if (nextReading.HasValue && monotonic() >= nextReading.Value)
+            if (nextReading.HasValue && now >= nextReading.Value)
             {
                 Text("Later", measurement.HasValue ? Gb(measurement.Value.Available) : "读取失败");
                 nextReading = null;
             }
-            if (!busy && schedule.IsDue(monotonic())) StartClean(settings.Mode, "定时");
+            double? usedPercent = measurement.HasValue ? (double?)(measurement.Value.UsedFraction * 100.0) : null;
+            if (!busy && schedule.IsDue(now, usedPercent))
+            {
+                if (settings.PauseOnFullscreen && isFullscreen())
+                {
+                    fullscreenDeferred = true;
+                }
+                else
+                {
+                    fullscreenDeferred = false;
+                    StartClean(settings.Mode, schedule.Trigger == AutoTrigger.Threshold ? "监控" : "定时");
+                }
+            }
+            else if (!busy)
+            {
+                fullscreenDeferred = false;
+            }
             UpdateUI();
         }
+
         private void StartClean(CleanMode chosen, string source)
         {
             if (!admin || closing || busy) return;
             schedule.Started();
-            busy = true; failed = false; nextReading = null; cleanedUntil = null;
+            busy = true; failed = false; fullscreenDeferred = false; nextReading = null; cleanedUntil = null; lastFreedBytes = 0;
             Text("Before", "—"); Text("After", "—"); Text("Later", "—");
+            Find<TextBlock>("Delta").Visibility = Visibility.Collapsed;
             SetResult(source + "清理中…");
             UpdateUI();
             Task.Factory.StartNew(() =>
@@ -405,62 +607,183 @@ namespace MemoryClock
                     View.Dispatcher.BeginInvoke(new Action(() => FinishClean(task.Result, source)));
             });
         }
+
         private void FinishClean(CleanResult outcome, string source)
         {
             busy = false; failed = !outcome.Success;
             bool stopped = !outcome.Success && schedule.Active;
             if (stopped) schedule.Pause();
+            long freed = outcome.Success ? outcome.FreedBytes : 0;
             if (outcome.Success)
             {
                 long now = monotonic();
                 schedule.Finished(now);
                 cleanedUntil = now + 8 * Stopwatch.Frequency;
+                if (DateTime.Today != todayDate) { todayDate = DateTime.Today; todayFreedBytes = 0; }
+                lastFreedBytes = freed;
+                todayFreedBytes += freed;
             }
             Text("Before", outcome.Before.HasValue ? Gb(outcome.Before.Value.Available) : "—");
             Text("After", outcome.After.HasValue ? Gb(outcome.After.Value.Available) : "—");
+            var delta = Find<TextBlock>("Delta");
+            if (outcome.Success && outcome.Before.HasValue && outcome.After.HasValue)
+            {
+                long signed = outcome.SignedDeltaBytes;
+                delta.Text = signed > 0 ? "本次释放 +" + Gb(signed)
+                    : signed < 0 ? "可用变化 -" + Gb(-signed)
+                    : "空间持平 0.00 GB";
+                delta.Foreground = (Brush)View.Resources[signed > 0 ? "Lime" : "Muted"];
+                delta.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                delta.Visibility = Visibility.Collapsed;
+            }
             if (outcome.After.HasValue)
             {
                 nextReading = monotonic() + 30 * Stopwatch.Frequency;
-                Text("Later", schedule.Active && settings.Seconds < 30 ? "间隔不足" : "等待读数");
+                bool shortInterval = schedule.Active && schedule.Trigger == AutoTrigger.Interval && settings.Seconds < 30;
+                Text("Later", shortInterval ? "间隔不足" : "等待读数");
                 PaintMemory(outcome.After);
             }
-            SetResult(DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) + " · " + source + " · " + outcome.Summary
-                + (stopped ? "；定时已暂停。" : ""));
+            string daily = outcome.Success && todayFreedBytes > 0 ? " · 今日累计 +" + Gb(todayFreedBytes) : "";
+            string pauseNote = stopped ? (schedule.Trigger == AutoTrigger.Threshold ? "；监控已暂停。" : "；定时已暂停。") : "";
+            SetResult(DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) + " · " + source + " · " + outcome.Summary + daily + pauseNote);
             UpdateUI();
         }
 
         private static string Gb(ulong bytes) { return (bytes / 1073741824.0).ToString("0.00", CultureInfo.InvariantCulture) + " GB"; }
+        private static string Gb(long bytes) { return (bytes / 1073741824.0).ToString("0.00", CultureInfo.InvariantCulture) + " GB"; }
+        private static string ShortDelta(long bytes)
+        {
+            double gb = bytes / 1073741824.0;
+            if (gb >= 0.1) return "+" + gb.ToString("0.0", CultureInfo.InvariantCulture) + " GB";
+            return "+" + Math.Round(bytes / 1048576.0).ToString("0", CultureInfo.InvariantCulture) + " MB";
+        }
+
         private void PaintMemory(Reading? measurement)
         {
             currentMemory = measurement;
-            double p = measurement.HasValue ? measurement.Value.UsedFraction * 100.0 : 0;
+            double? fraction = measurement.HasValue ? (double?)measurement.Value.UsedFraction : null;
+            double p = fraction.HasValue ? fraction.Value * 100.0 : 0;
             Text("Usage", measurement.HasValue ? p.ToString("0.0", CultureInfo.InvariantCulture) + "%" : "—");
-            Find<ProgressBar>("Meter").Value = p;
-            Find<Image>("MiniDial").Source = DialArt.Draw(measurement.HasValue ? (double?)measurement.Value.UsedFraction : null);
+            var meter = Find<ProgressBar>("Meter");
+            meter.Value = p;
+            meter.Foreground = DialArt.MeterBrush(fraction);
+            Find<Image>("MiniDial").Source = DialArt.Draw(fraction);
+            Find<System.Windows.Shapes.Path>("MiniStar").Fill = DialArt.AccentBrush(fraction);
             Text("Available", measurement.HasValue ? Gb(measurement.Value.Available) : "—");
             Text("Physical", measurement.HasValue ? Gb(measurement.Value.Total) : "—");
             Text("Commit", measurement.HasValue ? Gb(measurement.Value.Committed) + " / " + Gb(measurement.Value.CommitLimit) : "—");
             PaintCompact();
         }
+
         private void UpdateUI()
         {
             bool enabled = schedule.Active;
-            Text("ScheduleState", enabled ? "定时已启用" : "定时未启用");
+            bool thresholdActive = enabled && schedule.Trigger == AutoTrigger.Threshold;
+            bool thresholdSelected = SelectedTrigger == AutoTrigger.Threshold;
+            Text("ScheduleState", !enabled ? (thresholdSelected ? "监控未启用" : "定时未启用")
+                : thresholdActive ? "监控已启用" : "定时已启用");
             Find<Ellipse>("ScheduleDot").Fill = (Brush)View.Resources[enabled ? "Lime" : "Muted"];
-            int? next = schedule.SecondsLeft(monotonic());
+
+            int? left = schedule.SecondsLeft(monotonic());
             TextBlock nextLabel = Find<TextBlock>("Next");
-            nextLabel.Text = !enabled ? "下次清理：未启用" : next.HasValue ? "下次清理：" + next.Value + " 秒后" : "本轮正在清理…";
-            nextLabel.Foreground = (Brush)View.Resources[enabled ? "Amber" : "Muted"];
-            arm.Content = enabled ? "暂停定时" : "启用定时";
-            seconds.IsEnabled = gentle.IsEnabled = strong.IsEnabled = !enabled;
+            if (!enabled)
+            {
+                nextLabel.Text = thresholdSelected ? "自动监控：未启用" : "下次清理：未启用";
+                nextLabel.Foreground = (Brush)View.Resources["Muted"];
+            }
+            else if (busy)
+            {
+                nextLabel.Text = "本轮正在清理…";
+                nextLabel.Foreground = (Brush)View.Resources["Amber"];
+            }
+            else if (fullscreenDeferred)
+            {
+                nextLabel.Text = "全屏避让中";
+                nextLabel.Foreground = (Brush)View.Resources["Azure"];
+            }
+            else if (thresholdActive)
+            {
+                nextLabel.Text = left.HasValue ? "间隔 " + left.Value + " 秒后恢复" : "达到 " + schedule.Threshold + "% 自动清";
+                nextLabel.Foreground = (Brush)View.Resources["Amber"];
+            }
+            else
+            {
+                nextLabel.Text = left.HasValue ? "下次清理：" + left.Value + " 秒后" : "下次清理：就绪";
+                nextLabel.Foreground = (Brush)View.Resources["Amber"];
+            }
+
+            arm.Content = enabled
+                ? (thresholdActive ? "暂停监控" : "暂停定时")
+                : (thresholdSelected ? "启用监控" : "启用定时");
+            seconds.IsEnabled = gentle.IsEnabled = strong.IsEnabled = triggerInterval.IsEnabled = triggerThreshold.IsEnabled = !enabled;
             arm.IsEnabled = enabled || !busy;
             run.IsEnabled = !busy;
             if (admin) run.Content = busy ? "正在清理…" : "立即清理";
-            if (trayPause != null) trayPause.Enabled = enabled;
+            if (trayClean != null) trayClean.Enabled = !busy;
+            if (trayPause != null)
+            {
+                trayPause.Enabled = enabled;
+                trayPause.Text = thresholdActive ? "暂停监控" : "暂停自动清理";
+            }
+            if (trayFullscreen != null) trayFullscreen.Checked = settings.PauseOnFullscreen;
             UpdateCompact();
         }
 
         internal Window CompactView { get { return compact; } }
+
+        internal static Point ResolveCompactLocation(Settings current, double width, double height, Rect workArea, Rect[] screenAreas)
+        {
+            if (current.CompactLeft.HasValue && current.CompactTop.HasValue && screenAreas != null)
+            {
+                var saved = new Rect(current.CompactLeft.Value, current.CompactTop.Value, width, height);
+                foreach (Rect screen in screenAreas)
+                {
+                    Rect overlap = Rect.Intersect(saved, screen);
+                    if (!overlap.IsEmpty && overlap.Width >= 32 && overlap.Height >= 32)
+                    {
+                        double clampedX = Math.Max(screen.Left, Math.Min(screen.Right - width, saved.X));
+                        double clampedY = Math.Max(screen.Top, Math.Min(screen.Bottom - height, saved.Y));
+                        return new Point(clampedX, clampedY);
+                    }
+                }
+            }
+            return new Point(workArea.Right - width - 22, workArea.Bottom - height - 22);
+        }
+
+        private Rect[] CurrentScreenAreas()
+        {
+            double scaleX = 1.0, scaleY = 1.0;
+            PresentationSource source = PresentationSource.FromVisual(View);
+            if (source != null && source.CompositionTarget != null)
+            {
+                Matrix fromDevice = source.CompositionTarget.TransformFromDevice;
+                scaleX = fromDevice.M11; scaleY = fromDevice.M22;
+            }
+            Forms.Screen[] screens = Forms.Screen.AllScreens;
+            var areas = new Rect[screens.Length];
+            for (int i = 0; i < screens.Length; i++)
+            {
+                var r = screens[i].WorkingArea;
+                areas[i] = new Rect(r.Left * scaleX, r.Top * scaleY, r.Width * scaleX, r.Height * scaleY);
+            }
+            return areas;
+        }
+
+        private void PlaceCompactSafely()
+        {
+            if (compact == null) return;
+            if (!withTray)
+            {
+                compact.Left = -10000; compact.Top = -10000;
+                return;
+            }
+            Point pos = ResolveCompactLocation(settings, compact.Width, compact.Height, SystemParameters.WorkArea, CurrentScreenAreas());
+            compact.Left = pos.X;
+            compact.Top = pos.Y;
+        }
 
         internal void ShowCompact()
         {
@@ -469,24 +792,72 @@ namespace MemoryClock
             {
                 using (Stream layout = typeof(Dashboard).Assembly.GetManifestResourceStream("MemoryClock.Compact"))
                     compact = (Window)XamlReader.Load(layout);
-                Rect area = SystemParameters.WorkArea;
-                compact.Left = withTray ? area.Right - compact.Width - 22 : -10000;
-                compact.Top = withTray ? area.Bottom - compact.Height - 22 : -10000;
+                PlaceCompactSafely();
                 compact.ShowActivated = withTray;
                 compact.Topmost = withTray;
+
+                var cardRoot = (Border)compact.FindName("CardRoot");
+                cardRoot.ToolTip = topProcessSummary;
+                cardRoot.MouseEnter += (sender, evt) => RefreshTopProcesses();
+                cardRoot.ToolTipOpening += (sender, evt) => RefreshTopProcesses();
+
                 ((FrameworkElement)compact.FindName("Handle")).MouseLeftButtonDown += (sender, evt) =>
                 {
-                    if (evt.LeftButton == MouseButtonState.Pressed) compact.DragMove();
+                    if (evt.LeftButton != MouseButtonState.Pressed) return;
+                    compact.DragMove();
+                    if (withTray)
+                    {
+                        settings = settings.WithCompactLocation(compact.Left, compact.Top);
+                        PersistQuietly();
+                    }
                 };
                 ((Button)compact.FindName("Clean")).Click += (sender, evt) => ManualClean();
                 ((Button)compact.FindName("Expand")).Click += (sender, evt) => ShowWindow();
+
+                compact.MouseEnter += (sender, evt) => ApplyCompactOpacity(true);
+                compact.MouseLeave += (sender, evt) => ApplyCompactOpacity(true);
+                compact.IsKeyboardFocusWithinChanged += (sender, evt) => ApplyCompactOpacity(true);
+
+                var menu = (ContextMenu)compact.FindName("CompactMenu");
+                menu.Opened += (sender, evt) => { compactMenuOpen = true; UpdateCompactMenu(); ApplyCompactOpacity(true); };
+                menu.Closed += (sender, evt) => { compactMenuOpen = false; ApplyCompactOpacity(true); };
+                ((MenuItem)compact.FindName("MenuClean")).Click += (sender, evt) => ManualClean();
+                ((MenuItem)compact.FindName("MenuGentle")).Click += (sender, evt) => OnModeClicked(CleanMode.Gentle);
+                ((MenuItem)compact.FindName("MenuStrong")).Click += (sender, evt) => OnModeClicked(CleanMode.Strong);
+                ((MenuItem)compact.FindName("MenuAuto")).Click += (sender, evt) => ToggleSchedule();
+                ((MenuItem)compact.FindName("MenuSubtle")).Click += (sender, evt) => SetSubtleOpacity(!settings.SubtleOpacity);
+                ((MenuItem)compact.FindName("MenuFullscreen")).Click += (sender, evt) => SetPauseOnFullscreen(!settings.PauseOnFullscreen);
+                ((MenuItem)compact.FindName("MenuExpand")).Click += (sender, evt) => ShowWindow();
+                ((MenuItem)compact.FindName("MenuExit")).Click += (sender, evt) => Exit();
+
                 compact.Closing += (sender, evt) => { if (!closing) { evt.Cancel = true; compact.Hide(); } };
                 compact.Closed += (sender, evt) => compact = null;
                 PaintCompact();
                 UpdateCompact();
+                ApplyCompactOpacity(false);
+            }
+            else
+            {
+                PlaceCompactSafely();
             }
             if (View.IsVisible) View.Hide();
             compact.Show();
+        }
+
+        private void ApplyCompactOpacity(bool animate)
+        {
+            if (compact == null) return;
+            bool engaged = !withTray || !settings.SubtleOpacity || compact.IsMouseOver || compact.IsKeyboardFocusWithin || compactMenuOpen;
+            double target = engaged ? 1.0 : SubtleIdleOpacity;
+            if (!animate)
+            {
+                compact.BeginAnimation(UIElement.OpacityProperty, null);
+                compact.Opacity = target;
+                return;
+            }
+            var anim = new DoubleAnimation(target, TimeSpan.FromMilliseconds(engaged ? 140 : 210))
+                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+            compact.BeginAnimation(UIElement.OpacityProperty, anim);
         }
 
         private static string DialGb(ulong bytes)
@@ -495,12 +866,33 @@ namespace MemoryClock
         private void PaintCompact()
         {
             if (compact == null) return;
+            double? fraction = currentMemory.HasValue ? (double?)currentMemory.Value.UsedFraction : null;
             TextBlock used = (TextBlock)compact.FindName("Used"), free = (TextBlock)compact.FindName("Free");
             used.Text = currentMemory.HasValue ? DialGb(currentMemory.Value.Total - Math.Min(currentMemory.Value.Total, currentMemory.Value.Available)) : "—";
             free.Text = currentMemory.HasValue ? DialGb(currentMemory.Value.Available) : "—";
-            ((TextBlock)compact.FindName("DialPercent")).Text = currentMemory.HasValue ?
-                currentMemory.Value.UsedFraction.ToString("0%", CultureInfo.InvariantCulture) : "—";
+            var percent = (TextBlock)compact.FindName("DialPercent");
+            percent.Text = fraction.HasValue ? fraction.Value.ToString("0%", CultureInfo.InvariantCulture) : "—";
+            percent.Foreground = DialArt.AccentBrush(fraction);
             ((Image)compact.FindName("Dial")).Source = Find<Image>("MiniDial").Source;
+        }
+
+        private void UpdateCompactMenu()
+        {
+            if (compact == null) return;
+            bool enabled = schedule.Active;
+            ((MenuItem)compact.FindName("MenuClean")).IsEnabled = !busy;
+            var mGentle = (MenuItem)compact.FindName("MenuGentle");
+            var mStrong = (MenuItem)compact.FindName("MenuStrong");
+            mGentle.IsChecked = Selected == CleanMode.Gentle;
+            mStrong.IsChecked = Selected == CleanMode.Strong;
+            mGentle.IsEnabled = mStrong.IsEnabled = !enabled;
+            var mAuto = (MenuItem)compact.FindName("MenuAuto");
+            mAuto.IsEnabled = enabled || !busy;
+            mAuto.Header = enabled
+                ? (schedule.Trigger == AutoTrigger.Threshold ? "暂停监控" : "暂停定时")
+                : (SelectedTrigger == AutoTrigger.Threshold ? "启用占用监控" : "启用定时清理");
+            ((MenuItem)compact.FindName("MenuSubtle")).IsChecked = settings.SubtleOpacity;
+            ((MenuItem)compact.FindName("MenuFullscreen")).IsChecked = settings.PauseOnFullscreen;
         }
 
         private void UpdateCompact()
@@ -511,15 +903,25 @@ namespace MemoryClock
             button.ToolTip = admin ? "立即清理内存" : "授权后立即清理内存";
             var status = (TextBlock)compact.FindName("Status");
             bool justCleaned = cleanedUntil.HasValue && monotonic() < cleanedUntil.Value;
-            string label = busy ? "正在清理" : failed ? "未完成" : justCleaned ? "刚清理完" : schedule.Active ? "定时中" : "就绪";
+            string cleanedText = lastFreedBytes >= 10L * 1024 * 1024 ? ShortDelta(lastFreedBytes) : "刚清理完";
+            string idleAuto = schedule.Trigger == AutoTrigger.Threshold ? "监控中" : "定时中";
+            string label = busy ? "正在清理"
+                : failed ? "未完成"
+                : justCleaned ? cleanedText
+                : fullscreenDeferred ? "全屏避让"
+                : schedule.Active ? idleAuto
+                : "就绪";
             if (status.Text != label)
             {
                 status.Text = label;
                 Announce(status);
             }
-            status.Foreground = busy ? (Brush)View.Resources["Amber"] : failed ? Brushes.LightSalmon
-                : justCleaned ? (Brush)View.Resources["Lime"] : (Brush)View.Resources[schedule.Active ? "Azure" : "Muted"];
+            status.Foreground = busy ? (Brush)View.Resources["Amber"]
+                : failed ? Brushes.LightSalmon
+                : justCleaned ? (Brush)View.Resources["Lime"]
+                : (Brush)View.Resources[(schedule.Active || fullscreenDeferred) ? "Azure" : "Muted"];
             status.ToolTip = resultMessage;
+            UpdateCompactMenu();
         }
 
         private void ShowWindow()
@@ -529,12 +931,15 @@ namespace MemoryClock
             if (View.WindowState == WindowState.Minimized) View.WindowState = WindowState.Normal;
             if (withTray) View.Activate();
         }
+
         private void Exit()
         {
             if (busy) { SetResult("正在清理，请等本轮结束再退出。"); return; }
             closing = true; View.Close();
         }
+
         internal void AllowShutdown() { closing = true; }
+
         public void Dispose()
         {
             timer.Stop();

@@ -2,11 +2,15 @@
 // src/main.c (_app_memoryclean). Copyright (c) 2011-2025 Henry++.
 // GPL version 3. See README.md and the included upstream source and license.
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text;
 using System.Threading;
 
 namespace MemoryClock
@@ -26,6 +30,30 @@ namespace MemoryClock
         internal readonly Reading? Before, After;
         internal CleanResult(string summary, bool success, Reading? before, Reading? after)
         { Summary = summary; Success = success; Before = before; After = after; }
+
+        internal long SignedDeltaBytes
+        {
+            get
+            {
+                if (!Before.HasValue || !After.HasValue) return 0;
+                if (After.Value.Available >= Before.Value.Available)
+                {
+                    ulong up = After.Value.Available - Before.Value.Available;
+                    return up > (ulong)long.MaxValue ? long.MaxValue : (long)up;
+                }
+                ulong down = Before.Value.Available - After.Value.Available;
+                return down > (ulong)long.MaxValue ? long.MinValue : -(long)down;
+            }
+        }
+
+        internal long FreedBytes
+        {
+            get
+            {
+                long delta = SignedDeltaBytes;
+                return delta > 0 ? delta : 0;
+            }
+        }
     }
 
     internal static class Cleaner
@@ -61,6 +89,9 @@ namespace MemoryClock
         }
         [DllImport("kernel32.dll", EntryPoint = "K32GetPerformanceInfo", SetLastError = true)]
         private static extern bool GetPerformanceInfo(out PerformanceInfo info, uint size);
+        [DllImport("shell32.dll")]
+        private static extern int SHQueryUserNotificationState(out int state);
+
         internal static Reading? Read()
         {
             PerformanceInfo info;
@@ -69,6 +100,60 @@ namespace MemoryClock
             if (total == 0) return null;
             return new Reading { Total = total, Available = Math.Min(total, info.PhysicalAvailable.ToUInt64() * page),
                 Committed = info.CommitTotal.ToUInt64() * page, CommitLimit = info.CommitLimit.ToUInt64() * page };
+        }
+
+        internal static bool IsFullscreenBusy()
+        {
+            int state;
+            // QUNS_BUSY (2), QUNS_RUNNING_D3D_FULL_SCREEN (3), QUNS_PRESENTATION_MODE (4).
+            return SHQueryUserNotificationState(out state) == 0 && (state == 2 || state == 3 || state == 4);
+        }
+
+        internal static string ReadTopProcesses(int maxCount = 3)
+        {
+            var totals = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            Process[] list;
+            try { list = Process.GetProcesses(); }
+            catch { return "暂时无法读取进程占用"; }
+            foreach (Process proc in list)
+            {
+                try
+                {
+                    string name = proc.ProcessName;
+                    if (string.IsNullOrEmpty(name) || string.Equals(name, "Idle", StringComparison.OrdinalIgnoreCase)) continue;
+                    long bytes = proc.WorkingSet64;
+                    if (bytes <= 0) continue;
+                    if (!names.ContainsKey(name)) names[name] = name;
+                    long current;
+                    totals.TryGetValue(name, out current);
+                    totals[name] = current + bytes;
+                    int c;
+                    counts.TryGetValue(name, out c);
+                    counts[name] = c + 1;
+                }
+                catch { }
+                finally { proc.Dispose(); }
+            }
+            var top = totals.OrderByDescending(item => item.Value).Take(maxCount).ToList();
+            if (top.Count == 0) return "暂无可读取的进程占用";
+            var text = new StringBuilder("当前占用内存前三");
+            for (int i = 0; i < top.Count; i++)
+            {
+                string key = top[i].Key;
+                int count = counts[key];
+                text.Append('\n').Append(i + 1).Append(". ").Append(names[key]).Append(" · ").Append(FormatBytes(top[i].Value));
+                if (count > 1) text.Append("（").Append(count).Append(" 个进程）");
+            }
+            return text.ToString();
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            double gb = bytes / 1073741824.0;
+            if (gb >= 1.0) return gb.ToString("0.00", CultureInfo.InvariantCulture) + " GB";
+            return Math.Round(bytes / 1048576.0).ToString("0", CultureInfo.InvariantCulture) + " MB";
         }
 
         [StructLayout(LayoutKind.Sequential)]

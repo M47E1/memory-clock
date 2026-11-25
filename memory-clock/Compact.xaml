@@ -6,6 +6,82 @@
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display" RenderOptions.BitmapScalingMode="HighQuality">
     <Window.Resources>
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="#132022"/>
+            <Setter Property="Foreground" Value="#EAF3EF"/>
+            <Setter Property="BorderBrush" Value="#253A3D"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="9,6"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="9" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ContextMenu">
+            <Setter Property="Background" Value="#132022"/>
+            <Setter Property="Foreground" Value="#E6F1ED"/>
+            <Setter Property="BorderBrush" Value="#253A3D"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4"/>
+            <Setter Property="FontFamily" Value="Segoe UI, Microsoft YaHei UI"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="10" Padding="{TemplateBinding Padding}">
+                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="Separator">
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Margin" Value="6,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Separator">
+                        <Rectangle Height="1" Fill="#223639"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="MenuItem">
+            <Setter Property="Foreground" Value="#E6F1ED"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="Row" Background="Transparent" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="16"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Path x:Name="CheckMark" Width="9" Height="7" Stretch="Uniform" VerticalAlignment="Center" HorizontalAlignment="Left"
+                                      Stroke="#C8FA8E" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M 1,3.5 L 3.5,6 L 8,1" Visibility="Collapsed"/>
+                                <ContentPresenter Grid.Column="1" ContentSource="Header" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True"><Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/></Trigger>
+                            <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Row" Property="Background" Value="#1E352D"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value=".45"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="CoreButton" TargetType="Button">
             <Setter Property="Foreground" Value="#F3FAF4"/>
             <Setter Property="Background" Value="Transparent"/>
@@ -49,7 +125,23 @@
             </Setter>
         </Style>
     </Window.Resources>
-    <Border CornerRadius="16" Background="#132220">
+    <Border x:Name="CardRoot" CornerRadius="16" Background="#132220"
+            ToolTipService.InitialShowDelay="450" ToolTipService.ShowDuration="15000" ToolTip="正在读取占用内存前三的程序…">
+        <Border.ContextMenu>
+            <ContextMenu x:Name="CompactMenu">
+                <MenuItem x:Name="MenuClean" Header="立即清理"/>
+                <Separator/>
+                <MenuItem x:Name="MenuGentle" Header="温和模式" IsCheckable="True"/>
+                <MenuItem x:Name="MenuStrong" Header="强力模式" IsCheckable="True"/>
+                <Separator/>
+                <MenuItem x:Name="MenuAuto" Header="启用自动清理"/>
+                <MenuItem x:Name="MenuSubtle" Header="待机微透明" IsCheckable="True"/>
+                <MenuItem x:Name="MenuFullscreen" Header="全屏时自动避让" IsCheckable="True"/>
+                <Separator/>
+                <MenuItem x:Name="MenuExpand" Header="展开主界面"/>
+                <MenuItem x:Name="MenuExit" Header="退出"/>
+            </ContextMenu>
+        </Border.ContextMenu>
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="22"/>
@@ -75,7 +167,7 @@
                         Content="Clean" AutomationProperties.Name="Clean，立即清理内存">
                     <Button.ContentTemplate><DataTemplate>
                         <StackPanel VerticalAlignment="Center">
-                            <Path HorizontalAlignment="Center" Width="7.5" Height="7.5" Stretch="Uniform" Fill="#C8FA8E" Margin="0,1,0,1"
+                            <Path HorizontalAlignment="Center" Width="7.5" Height="7.5" Stretch="Uniform" Fill="{Binding Foreground, ElementName=DialPercent}" Margin="0,1,0,1"
                                   Data="M 7,0 Q 8,6 14,7 Q 8,8 7,14 Q 6,8 0,7 Q 6,6 7,0 Z"/>
                             <TextBlock Text="{Binding}" HorizontalAlignment="Center" Foreground="#F4FBF5"
                                        FontSize="11.5" FontWeight="SemiBold" LineHeight="13" LineStackingStrategy="BlockLineHeight"/>

@@ -18,6 +18,24 @@
         <Style TargetType="TextBlock">
             <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="#132022"/>
+            <Setter Property="Foreground" Value="#EAF3EF"/>
+            <Setter Property="BorderBrush" Value="#253A3D"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="FontSize" Value="11.5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="9" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="SectionTitle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="FontSize" Value="13.5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -104,6 +122,31 @@
                 </ControlTemplate>
             </Setter.Value></Setter>
         </Style>
+        <Style x:Key="SegTab" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#89A19E"/>
+            <Setter Property="FontSize" Value="11.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="9,2.5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="Template"><Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="Pill" Background="Transparent" BorderBrush="Transparent" BorderThickness="1"
+                            CornerRadius="5" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Pill" Property="Background" Value="#1C2C2F"/></Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter Property="Foreground" Value="#EFF8F4"/>
+                            <Setter TargetName="Pill" Property="Background" Value="#243C35"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Pill" Property="BorderBrush" Value="{StaticResource Azure}"/></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Pill" Property="Opacity" Value=".6"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value></Setter>
+        </Style>
         <Style x:Key="RingButton" TargetType="Button">
             <Setter Property="Foreground" Value="#DFF3DA"/>
             <Setter Property="Background" Value="#132220"/>
@@ -126,13 +169,14 @@
         </Style>
         <Style TargetType="ProgressBar">
             <Setter Property="Height" Value="6"/>
+            <Setter Property="Foreground" Value="{StaticResource MemoryInk}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ProgressBar">
                         <Border Background="#B1CDB0" CornerRadius="3">
                             <Grid x:Name="PART_Track">
                                 <Border x:Name="PART_Indicator" HorizontalAlignment="Left" CornerRadius="3"
-                                        Background="{StaticResource MemoryInk}"/>
+                                        Background="{TemplateBinding Foreground}"/>
                             </Grid>
                         </Border>
                     </ControlTemplate>
@@ -202,7 +246,8 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <Border x:Name="MemoryBlock" Style="{StaticResource Card}" Background="{StaticResource MemorySurface}" Padding="20,16">
+                <Border x:Name="MemoryBlock" Style="{StaticResource Card}" Background="{StaticResource MemorySurface}" Padding="20,16"
+                        ToolTipService.InitialShowDelay="350" ToolTipService.ShowDuration="15000" ToolTip="正在读取占用内存前三的程序…">
                     <StackPanel>
                         <Grid>
                             <StackPanel VerticalAlignment="Center">
@@ -217,7 +262,7 @@
                                 <StackPanel IsHitTestVisible="False" VerticalAlignment="Center">
                                     <Grid Width="46" Height="40" HorizontalAlignment="Center">
                                         <Image x:Name="MiniDial" Stretch="Uniform"/>
-                                        <Path Width="8" Height="8" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                        <Path x:Name="MiniStar" Width="8" Height="8" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"
                                               Margin="0,2,0,0" Fill="#C8FA8E"
                                               Data="M 7,0 Q 8,6 14,7 Q 8,8 7,14 Q 6,8 0,7 Q 6,6 7,0 Z"/>
                                     </Grid>
@@ -251,7 +296,12 @@
 
                 <Border x:Name="ResultBlock" Grid.Row="2" Style="{StaticResource Card}" Padding="20,14">
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="上次清理 · 可用内存" Style="{StaticResource SectionTitle}" Margin="0,0,0,11"/>
+                        <DockPanel Margin="0,0,0,11">
+                            <TextBlock x:Name="Delta" DockPanel.Dock="Right" FontSize="11.5" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Lime}" Typography.NumeralAlignment="Tabular"
+                                       VerticalAlignment="Center" Visibility="Collapsed"/>
+                            <TextBlock Text="上次清理 · 可用内存" Style="{StaticResource SectionTitle}" VerticalAlignment="Center"/>
+                        </DockPanel>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition/>
@@ -292,12 +342,19 @@
                             <RadioButton x:Name="Strong" GroupName="Mode" Content="强力 · 额外腾出应用内存（可能短暂变慢）"
                                          ToolTip="先整理应用工作集，再执行温和清理；应用保持打开，切回时可能短暂变慢"/>
                             <TextBlock Text="两种模式均不会关闭正在运行的应用。" FontSize="11" Foreground="#748D8A" Margin="2,0,0,0"/>
-                            <Border x:Name="TimerBlock" Padding="13,11" CornerRadius="11" Background="{StaticResource Inset}" Margin="0,13,0,0">
+                            <Border x:Name="TimerBlock" Padding="13,10" CornerRadius="11" Background="{StaticResource Inset}" Margin="0,12,0,0">
                                 <StackPanel>
-                                    <DockPanel Margin="0,0,0,9">
+                                    <DockPanel Margin="0,0,0,8">
                                         <TextBlock x:Name="Next" DockPanel.Dock="Right" Foreground="{StaticResource Muted}"
-                                                   Text="下次清理：未启用" FontSize="11.5" VerticalAlignment="Center"/>
-                                        <TextBlock Text="定时清理" FontSize="13" FontWeight="SemiBold" Foreground="#E4EFEA" VerticalAlignment="Center"/>
+                                                   Text="下次清理：未启用" FontSize="11.5" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                        <Border Background="#162426" CornerRadius="7" Padding="2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <StackPanel Orientation="Horizontal">
+                                                <RadioButton x:Name="TriggerInterval" Style="{StaticResource SegTab}" GroupName="Trigger"
+                                                             Content="按时间" IsChecked="True" AutomationProperties.Name="按时间自动清理"/>
+                                                <RadioButton x:Name="TriggerThreshold" Style="{StaticResource SegTab}" GroupName="Trigger"
+                                                             Content="按占用" AutomationProperties.Name="按内存占用自动清理"/>
+                                            </StackPanel>
+                                        </Border>
                                     </DockPanel>
                                     <Grid>
                                         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -306,18 +363,18 @@
                                                      MaxLength="5" Padding="8,4,26,4" MinHeight="34"
                                                      Background="#182426" Foreground="#F1F7F4" CaretBrush="#F1F7F4"
                                                      AutomationProperties.Name="清理间隔（秒）" AutomationProperties.HelpText="输入 10 至 86400 之间的整数"/>
-                                            <TextBlock Text="秒" Style="{StaticResource Caption}" Margin="0,0,9,0"
+                                            <TextBlock x:Name="TriggerUnit" Text="秒" Style="{StaticResource Caption}" Margin="0,0,9,0"
                                                        VerticalAlignment="Center" HorizontalAlignment="Right" IsHitTestVisible="False"/>
                                         </Grid>
                                         <Button x:Name="Arm" Grid.Column="1" Content="启用定时" MinWidth="88" MinHeight="34" Padding="12,5"
                                                 FontSize="12.5" Background="{StaticResource Amber}" Foreground="#271E10"/>
                                     </Grid>
                                     <TextBlock x:Name="TimeHint" Text="10–86400 秒 · 开启先清一次，完后重计" FontSize="11"
-                                               Foreground="{StaticResource Muted}" Margin="1,7,0,0" AutomationProperties.LiveSetting="Polite"/>
+                                               Style="{StaticResource Caption}" Margin="1,7,0,0" AutomationProperties.LiveSetting="Polite"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
-                        <StackPanel DockPanel.Dock="Bottom" Margin="0,13,0,0">
+                        <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
                             <Button x:Name="Clean" Content="立即清理" MinHeight="40" FontSize="13.5" FontWeight="Bold"
                                     Background="{StaticResource Lime}" Foreground="#112718"/>
                             <TextBlock x:Name="Permission" FontSize="11" Foreground="#748D8A" Text="清理需要管理员权限。"

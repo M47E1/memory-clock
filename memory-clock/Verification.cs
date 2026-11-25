@@ -42,7 +42,7 @@ namespace MemoryClock
                     finally { g.ReleaseHdc(dc); }
                 }
                 frame.Save(Path.Combine(output, "window.png"), System.Drawing.Imaging.ImageFormat.Png);
-                var clientStart = view.PointToScreen(new Point(0,0));
+                var clientStart = view.PointToScreen(new Point(0, 0));
                 int y = (int)(clientStart.Y - bounds.Top) / 2;
                 var pixel = frame.GetPixel(frame.Width / 2, y);
                 Need(pixel.R == expected.R && pixel.G == expected.G && pixel.B == expected.B,
@@ -60,21 +60,42 @@ namespace MemoryClock
                 CheckSchedule();
                 CheckEngine();
                 CheckPageFile();
+                CheckDialTiers();
                 CheckWindow(Path.GetFullPath(args[0]));
                 application.Shutdown();
-                Console.WriteLine("PASS: login startup switch and tray launch, interval control, compact dial, and page-file settings. Cleaning was simulated.");
+                Console.WriteLine("PASS: login startup, dual auto-clean (interval/threshold), fullscreen defer, load colors, top-3 tooltip, compact menu/position/opacity, and page-file settings. Cleaning was simulated.");
                 return 0;
             }
             catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+        }
+
+        private static void CheckDialTiers()
+        {
+            Need(DialArt.LevelFor(0.625) == LoadLevel.Normal &&
+                 DialArt.LevelFor(0.80) == LoadLevel.Elevated &&
+                 DialArt.LevelFor(0.899) == LoadLevel.Elevated &&
+                 DialArt.LevelFor(0.90) == LoadLevel.High, "Dial load thresholds are wrong.");
+            Need(!object.ReferenceEquals(DialArt.AccentBrush(0.6), DialArt.AccentBrush(0.85)) &&
+                 !object.ReferenceEquals(DialArt.AccentBrush(0.85), DialArt.AccentBrush(0.95)) &&
+                 !object.ReferenceEquals(DialArt.MeterBrush(0.6), DialArt.MeterBrush(0.85)) &&
+                 !object.ReferenceEquals(DialArt.MeterBrush(0.85), DialArt.MeterBrush(0.95)),
+                "Load-tier brushes must be distinct.");
         }
 
         private static void CheckSchedule()
         {
             Settings settings = Settings.Parse(" 0500 ", CleanMode.Strong);
             Need(settings.Display == "500" && Settings.Parse("86400", CleanMode.Gentle).Seconds == 86400, "Interval was not normalized.");
+            Need(Settings.ParseThreshold(" 85 ") == 85 && Settings.ParseThreshold("50") == 50 && Settings.ParseThreshold("95") == 95,
+                "Threshold was not normalized.");
             foreach (string input in new[] { "", "9", "0", "24:00", "10.5", "86401", "+500", "-40" })
             {
                 try { Settings.Parse(input, CleanMode.Gentle); throw new Exception("Invalid schedule accepted: " + input); }
+                catch (FormatException) { }
+            }
+            foreach (string input in new[] { "", "49", "96", "100", "85.5", "-80" })
+            {
+                try { Settings.ParseThreshold(input); throw new Exception("Invalid threshold accepted: " + input); }
                 catch (FormatException) { }
             }
             long s = Stopwatch.Frequency;
@@ -91,21 +112,64 @@ namespace MemoryClock
             clock.Pause();
             clock.Finished(9000 * s);
             Need(!clock.IsDue(9500 * s) && clock.SecondsLeft(9500 * s) == null, "Finishing a paused run restarted the timer.");
-            var request = new LaunchRequest(true, true, settings);
-            LaunchRequest resumed = LaunchRequest.Parse(request.Arguments.Split(' '));
-            Need(resumed != null && resumed.Enable && resumed.Compact && resumed.Choice.Seconds == 500 &&
-                resumed.Choice.Mode == CleanMode.Strong, "Elevation did not carry the requested action, view, and mode.");
-            Need(LaunchRequest.Parse("--elevated enable Gentle 9 full".Split(' ')) == null &&
-                LaunchRequest.Parse("--elevated other Strong 500 compact".Split(' ')) == null, "Invalid elevation requests were accepted.");
+
+            // Threshold trigger + 60s cooldown (including pause/re-arm & float precision) check
+            var watch = new IntervalTimer();
+            Settings highWater = Settings.Default.WithTrigger(AutoTrigger.Threshold).WithThreshold(85).WithMode(CleanMode.Strong);
+            watch.Arm(highWater, 100 * s);
+            Need(!watch.IsDue(100 * s, 84.9) && watch.IsDue(100 * s, 85.0), "Threshold did not fire at configured percent.");
+            watch.Started();
+            Need(!watch.IsDue(105 * s, 95.0), "Threshold allowed overlap while in flight.");
+            watch.Finished(105 * s);
+            Need(!watch.IsDue(164 * s, 95.0) && watch.SecondsLeft(164 * s) == 1, "Threshold ignored cooldown.");
+            // Pause and immediately re-arm must still respect remaining 60s cooldown
+            watch.Pause();
+            watch.Arm(highWater, 130 * s);
+            Need(!watch.IsDue(130 * s, 95.0) && watch.SecondsLeft(130 * s) == 35, "Pause/re-arm bypassed threshold cooldown.");
+            Need(watch.IsDue(165 * s, 86.0) && watch.SecondsLeft(165 * s) == null, "Threshold did not recover after cooldown.");
+            watch.Pause();
+            // Floating-point exact boundary (e.g. 66% represented as 65.99999999999999)
+            Settings sixtySix = Settings.Default.WithTrigger(AutoTrigger.Threshold).WithThreshold(66);
+            watch.Arm(sixtySix, 200 * s);
+            Need(watch.IsDue(200 * s, (1.0 - 0.34) * 100.0), "Threshold missed floating-point boundary.");
+            watch.Pause();
+
+            var reqInterval = new LaunchRequest(true, true, settings);
+            LaunchRequest resumed = LaunchRequest.Parse(reqInterval.Arguments.Split(' '));
+            Need(resumed != null && resumed.Enable && resumed.Compact && resumed.Choice.Trigger == AutoTrigger.Interval &&
+                resumed.Choice.Seconds == 500 && resumed.Choice.Mode == CleanMode.Strong,
+                "Elevation did not carry interval request.");
+            var reqThreshold = new LaunchRequest(true, false, highWater);
+            LaunchRequest resumedTh = LaunchRequest.Parse(reqThreshold.Arguments.Split(' '));
+            Need(resumedTh != null && resumedTh.Enable && !resumedTh.Compact && resumedTh.Choice.Trigger == AutoTrigger.Threshold &&
+                resumedTh.Choice.Threshold == 85 && resumedTh.Choice.Mode == CleanMode.Strong,
+                "Elevation did not carry threshold request.");
+            Need(LaunchRequest.Parse("--elevated enable Gentle Interval 9 full".Split(' ')) == null &&
+                LaunchRequest.Parse("--elevated enable Gentle Threshold 40 full".Split(' ')) == null &&
+                LaunchRequest.Parse("--elevated other Strong Interval 500 compact".Split(' ')) == null,
+                "Invalid elevation requests were accepted.");
+
+            // Compact location clamping: L-shaped dual monitors (dead corner must fall back!) & offscreen fallback
+            var work = new Rect(0, 0, 1920, 1040);
+            var screens = new[] { new Rect(0, 0, 1920, 1040), new Rect(-1080, 0, 1080, 1920) };
+            Point savedLeftScreen = Dashboard.ResolveCompactLocation(Settings.Default.WithCompactLocation(-400, 120), 104, 124, work, screens);
+            Need(savedLeftScreen.X == -400 && savedLeftScreen.Y == 120, "Multi-monitor saved compact location was rejected.");
+            Point deadCorner = Dashboard.ResolveCompactLocation(Settings.Default.WithCompactLocation(400, 1400), 104, 124, work, screens);
+            Need(deadCorner.X == 1920 - 104 - 22 && deadCorner.Y == 1040 - 124 - 22, "L-shaped dead-zone compact location did not fall back safely.");
+            Point disconnected = Dashboard.ResolveCompactLocation(Settings.Default.WithCompactLocation(4500, 200), 104, 124, work, screens);
+            Need(disconnected.X == 1920 - 104 - 22 && disconnected.Y == 1040 - 124 - 22, "Offscreen compact location did not fall back safely.");
         }
 
         private static void CheckEngine()
         {
             var actions = new List<Area>();
-            var samples = new Queue<Reading?>(new Reading?[] { new Reading { Available = 6 }, new Reading { Available = 8 } });
+            var samples = new Queue<Reading?>(new Reading?[] { new Reading { Available = 6UL << 30 }, new Reading { Available = 8UL << 30 } });
             CleanResult strong = Cleaner.Run(CleanMode.Strong, () => samples.Dequeue(), actions.Add);
-            Need(strong.Success && strong.Before.Value.Available == 6 && strong.After.Value.Available == 8
-                && actions.SequenceEqual(new[] { Area.WorkingSets, Area.FileCache, Area.LowStandby }), "Strong mode actions were mismatched.");
+            Need(strong.Success && strong.Before.Value.Available == (6UL << 30) && strong.After.Value.Available == (8UL << 30) &&
+                strong.FreedBytes == (2L << 30) && strong.SignedDeltaBytes == (2L << 30) &&
+                actions.SequenceEqual(new[] { Area.WorkingSets, Area.FileCache, Area.LowStandby }), "Strong mode actions or FreedBytes were mismatched.");
+            var neg = new CleanResult("已完成", true, new Reading { Available = 6UL << 30 }, new Reading { Available = 5UL << 30 });
+            Need(neg.SignedDeltaBytes == -(1L << 30) && neg.FreedBytes == 0, "Negative delta was not preserved accurately.");
             actions.Clear();
             Cleaner.Run(CleanMode.Gentle, () => null, actions.Add);
             Need(actions.SequenceEqual(new[] { Area.FileCache, Area.LowStandby }), "Gentle mode touched application worksets.");
@@ -115,6 +179,8 @@ namespace MemoryClock
             Reading? current = WindowsMemory.Read();
             Need(current.HasValue && current.Value.Total > 0 && current.Value.Available <= current.Value.Total &&
                 current.Value.Committed > 0 && current.Value.CommitLimit > 0, "Windows memory metrics unavailable or out of range.");
+            string top = WindowsMemory.ReadTopProcesses(3);
+            Need(top.StartsWith("当前占用内存前三") && top.Contains("1. "), "Top-3 process summary failed: " + top);
             if (!WindowsMemory.IsAdmin()) Need(!WindowsMemory.Clean(CleanMode.Strong).Success, "Non-admin cleaning was allowed.");
         }
 
@@ -183,22 +249,26 @@ namespace MemoryClock
             int executed = 0;
             CleanMode actual = CleanMode.Gentle;
             bool fail = false;
+            bool fullscreen = false;
+            ulong availableGb = 6;
             long elapsed = 0;
-            bool followup = false;
             int settingsOpened = 0;
             string key = @"Software\MemoryClock.Test." + Guid.NewGuid().ToString("N");
             string exe = Path.Combine(temp, "test app", "MemoryClock.exe");
             var startup = new StartupEntry(exe, key);
-            using (var page = new Dashboard(settingsPath, true, () => new Reading { Total = 16UL << 30,
-                Available = (followup ? 5UL : 6UL) << 30, Committed = 18UL << 30, CommitLimit = 48UL << 30 }, mode =>
-            {
-                actual = mode;
-                bool denied = fail;
-                Interlocked.Increment(ref executed);
-                return new CleanResult(denied ? "模拟拒绝" : "已完成", !denied,
-                    new Reading { Total = 16UL << 30, Available = 4UL << 30 },
-                    new Reading { Total = 16UL << 30, Available = 6UL << 30 });
-            }, null, false, () => elapsed, () => "C: · 已分配 32 GB · 设定上限 64 GB", () => settingsOpened++, startup))
+            using (var page = new Dashboard(settingsPath, true,
+                () => new Reading { Total = 16UL << 30, Available = availableGb << 30, Committed = 18UL << 30, CommitLimit = 48UL << 30 },
+                mode =>
+                {
+                    actual = mode;
+                    bool denied = fail;
+                    Interlocked.Increment(ref executed);
+                    return new CleanResult(denied ? "模拟拒绝" : "已完成", !denied,
+                        new Reading { Total = 16UL << 30, Available = 4UL << 30 },
+                        new Reading { Total = 16UL << 30, Available = 6UL << 30 });
+                },
+                null, false, () => elapsed, () => "C: · 已分配 32 GB · 设定上限 64 GB", () => settingsOpened++, startup,
+                () => fullscreen, () => "当前占用内存前三\n1. chrome · 4.20 GB（12 个进程）\n2. Code · 1.85 GB（6 个进程）\n3. WeChat · 420 MB"))
             {
                 Window view = page.View;
                 view.WindowStartupLocation = WindowStartupLocation.Manual;
@@ -236,29 +306,40 @@ namespace MemoryClock
                     foreach (string wrapping in new[] { "Result", "TimeHint", "PageFileHint", "PageFileSummary" })
                         Need(page.Find<TextBlock>(wrapping).TextWrapping == TextWrapping.Wrap,
                             wrapping + " must wrap so long runtime messages do not clip in the compact layout.");
+
+                    // Top-3 tooltip refresh on demand
+                    page.RefreshTopProcesses();
+                    WaitFor(() => ((string)page.Find<Border>("MemoryBlock").ToolTip).Contains("chrome"));
+
                     Refresh(view);
                     Need(view.ActualWidth < 800 && view.ActualHeight < 580, "Default dashboard must stay compact.");
                     Need(((ScrollViewer)view.Content).ScrollableHeight == 0, "Dashboard needs scrolling at its default size.");
                     CheckPanelLayout(page);
                     Capture((FrameworkElement)view.Content, Path.Combine(output, "dashboard.png"), ((SolidColorBrush)view.Background).Color);
                     CheckCaption(view, output);
+
                     view.Width = 1120; view.Height = 800; CheckPanelLayout(page);
                     view.Width = view.MinWidth; view.Height = view.MinHeight; Refresh(view);
                     CheckPanelLayout(page);
                     Need(((ScrollViewer)view.Content).ScrollableWidth == 0 &&
                         page.Find<Button>("Clean").ActualWidth > 250, "Dashboard clips at minimum width.");
+
                     seconds.Text = "9"; arm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     CheckPanelLayout(page);
                     Need(executed == 0 && !File.Exists(settingsPath) && page.Find<TextBlock>("TimeHint").Text.Contains("整数秒数"), "Invalid interval was accepted.");
+
                     seconds.Text = "60";
                     arm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Settings saved = Settings.Load(settingsPath);
-                    Need(saved.Mode == CleanMode.Gentle && saved.Seconds == 60, "Enabling did not save interval and mode.");
+                    Need(saved.Mode == CleanMode.Gentle && saved.Trigger == AutoTrigger.Interval && saved.Seconds == 60, "Enabling did not save interval and mode.");
                     WaitFor(() => page.Find<TextBlock>("After").Text == "6.00 GB");
                     Need(executed == 1 && actual == CleanMode.Gentle && !seconds.IsEnabled &&
                         page.Find<TextBlock>("Next").Text.Contains("60 秒后") &&
-                        page.Find<TextBlock>("Before").Text == "4.00 GB" && page.Find<TextBlock>("Later").Text == "等待读数",
-                        "Enabling did not clean immediately and start the countdown.");
+                        page.Find<TextBlock>("Before").Text == "4.00 GB" && page.Find<TextBlock>("Later").Text == "等待读数" &&
+                        page.Find<TextBlock>("Delta").Text == "本次释放 +2.00 GB" &&
+                        page.Find<TextBlock>("Result").Text.Contains("今日累计 +2.00 GB"),
+                        "Enabling did not clean immediately, display net/daily freed, and start countdown.");
+
                     minimize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Window mini = page.CompactView;
                     Refresh(mini);
@@ -271,28 +352,48 @@ namespace MemoryClock
                         ((TextBlock)mini.FindName("Free")).Text == "6.0" &&
                         ((TextBlock)mini.FindName("DialPercent")).Text == (.625).ToString("0%", System.Globalization.CultureInfo.InvariantCulture) &&
                         object.ReferenceEquals(((Image)mini.FindName("Dial")).Source, ring.Source) &&
-                        ((TextBlock)mini.FindName("Status")).Text == "刚清理完",
-                        "Compact view did not show the shared memory reading and Clean control.");
+                        ((TextBlock)mini.FindName("Status")).Text == "+2.0 GB" &&
+                        ((Border)mini.FindName("CardRoot")).ToolTip.ToString().Contains("chrome"),
+                        "Compact view did not show shared reading, +2.0 GB freed badge, and top-3 tooltip.");
                     Capture((FrameworkElement)mini.Content, Path.Combine(output, "compact.png"), ((SolidColorBrush)view.Background).Color);
-                    followup = true;
+
+                    // Verify compact context menu toggles subtle opacity
+                    var menuSubtle = (MenuItem)mini.FindName("MenuSubtle");
+                    Need(menuSubtle.IsChecked, "Subtle compact opacity should default to enabled.");
+                    menuSubtle.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Need(!Settings.Load(settingsPath).SubtleOpacity, "MenuSubtle did not persist toggle off.");
+                    menuSubtle.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Need(Settings.Load(settingsPath).SubtleOpacity, "MenuSubtle did not persist toggle on.");
+
+                    availableGb = 5;
                     elapsed = Stopwatch.Frequency * 29;
                     page.Tick();
                     Need(page.Find<TextBlock>("Later").Text == "等待读数" && ((TextBlock)mini.FindName("Status")).Text == "定时中",
-                        "Follow-up came too early or the recent status did not expire.");
+                        "Follow-up came too early or recent status did not expire.");
                     elapsed = Stopwatch.Frequency * 30;
                     page.Tick();
                     Need(page.Find<TextBlock>("Later").Text == "5.00 GB", "Follow-up was not measured independently.");
-                    elapsed = Stopwatch.Frequency * 59; page.Tick();
-                    Need(executed == 1, "Repeated run began before the configured interval.");
+
+                    // Verify fullscreen auto-defer holds scheduled clean until fullscreen exits, while manual clean still runs!
+                    fullscreen = true;
                     elapsed = Stopwatch.Frequency * 60; page.Tick();
+                    Need(executed == 1 && page.Find<TextBlock>("Next").Text == "全屏避让中" &&
+                        ((TextBlock)mini.FindName("Status")).Text == "全屏避让",
+                        "Fullscreen did not defer automatic cleaning.");
+                    fullscreen = false;
+                    elapsed = Stopwatch.Frequency * 61; page.Tick();
                     WaitFor(() => executed == 2 && clean.IsEnabled);
+
                     elapsed = Stopwatch.Frequency * 100; page.Tick();
+                    fullscreen = true;
                     clean.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Need(((TextBlock)mini.FindName("Status")).Text == "正在清理" && !clean.IsEnabled, "Compact did not show the in-flight state.");
+                    Need(((TextBlock)mini.FindName("Status")).Text == "正在清理" && !clean.IsEnabled, "Manual Compact Clean was blocked by fullscreen.");
                     WaitFor(() => executed == 3 && clean.IsEnabled);
+                    fullscreen = false;
                     Need(page.Find<TextBlock>("Result").Text.Contains("手动") && page.Find<TextBlock>("Next").Text.Contains("60 秒后") &&
-                        ((TextBlock)mini.FindName("Status")).Text == "刚清理完",
+                        ((TextBlock)mini.FindName("Status")).Text == "+2.0 GB",
                         "Compact Clean did not run once and restart the interval.");
+
                     fail = true;
                     elapsed = Stopwatch.Frequency * 159; page.Tick();
                     Need(executed == 3, "Manual run did not postpone the next automatic run.");
@@ -301,21 +402,66 @@ namespace MemoryClock
                     elapsed = Stopwatch.Frequency * 250; page.Tick();
                     Need(executed == 4 && seconds.IsEnabled && ((TextBlock)mini.FindName("Status")).Text == "未完成",
                         "A failed operation did not disarm automatic cleaning or surface an error in compact.");
+
                     ((Button)mini.FindName("Expand")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Need(view.IsVisible && !mini.IsVisible, "Expand did not restore the dashboard.");
+
+                    // Legacy v1 and v2 migrations
                     File.WriteAllLines(settingsPath, new[] { "1", "Strong", "12:30, 22:30" });
-                    Settings migrated = Settings.Load(settingsPath);
-                    Need(migrated.Mode == CleanMode.Strong && migrated.Seconds == 500, "Old settings did not preserve mode with the new default interval.");
+                    Settings migratedV1 = Settings.Load(settingsPath);
+                    Need(migratedV1.Mode == CleanMode.Strong && migratedV1.Seconds == 500 && migratedV1.Trigger == AutoTrigger.Interval,
+                        "v1 settings migration failed.");
+                    File.WriteAllLines(settingsPath, new[] { "2", "Strong", "180" });
+                    Settings migratedV2 = Settings.Load(settingsPath);
+                    Need(migratedV2.Mode == CleanMode.Strong && migratedV2.Seconds == 180 && migratedV2.SubtleOpacity && migratedV2.PauseOnFullscreen,
+                        "v2 settings migration failed.");
+
+                    // Strong mode direct execution (no popup) + Threshold trigger + high-load color preview
                     fail = false;
-                    page.Find<RadioButton>("Strong").IsChecked = true;
-                    seconds.Text = "120"; arm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Settings strongSaved = Settings.Load(settingsPath);
-                    Need(strongSaved.Mode == CleanMode.Strong && strongSaved.Seconds == 120 && File.ReadAllLines(settingsPath)[0] == "2",
-                        "Strong schedule could not be saved without a confirmation popup.");
-                    WaitFor(() => executed == 5 && actual == CleanMode.Strong && page.Find<TextBlock>("After").Text == "6.00 GB" &&
-                        page.Find<TextBlock>("Next").Text.Contains("120 秒后"));
+                    page.Find<RadioButton>("Strong").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    page.Find<RadioButton>("TriggerThreshold").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Need(page.Find<TextBlock>("TriggerUnit").Text == "%" && seconds.Text == "85", "Switching to threshold tab did not update unit/value.");
+                    availableGb = 6; // 62.5% < 85%
+                    page.Tick();
+                    arm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Settings thSaved = Settings.Load(settingsPath);
+                    Need(thSaved.Mode == CleanMode.Strong && thSaved.Trigger == AutoTrigger.Threshold && thSaved.Threshold == 85 &&
+                        File.ReadAllLines(settingsPath)[0] == "3", "Threshold settings were not saved in v3 format.");
+                    Need(executed == 4 && page.Find<TextBlock>("ScheduleState").Text == "监控已启用" &&
+                        page.Find<TextBlock>("Next").Text.Contains("85%"), "Threshold armed below limit should wait without cleaning.");
+                    CheckPanelLayout(page);
+
+                    // Spike RAM to 93.75% (1 GB free of 16 GB) -> triggers threshold clean + High coral load color!
+                    availableGb = 1;
+                    elapsed = Stopwatch.Frequency * 260;
+                    page.Tick();
+                    WaitFor(() => executed == 5 && actual == CleanMode.Strong && page.Find<Button>("Clean").IsEnabled);
+                    // Re-sample high load for visual inspection preview (without firing due to 60s cooldown!)
+                    elapsed = Stopwatch.Frequency * 270;
+                    page.Tick();
+                    Need(executed == 5 && page.Find<TextBlock>("Next").Text.Contains("间隔") &&
+                        object.ReferenceEquals(page.Find<ProgressBar>("Meter").Foreground, DialArt.MeterBrush(0.9375)),
+                        "High load color or threshold cooldown did not apply.");
+                    view.Width = 764; view.Height = 552; Refresh(view);
+                    Capture((FrameworkElement)view.Content, Path.Combine(output, "dashboard-high.png"), ((SolidColorBrush)view.Background).Color);
+                    minimize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Refresh(mini);
+                    Capture((FrameworkElement)mini.Content, Path.Combine(output, "compact-high.png"), ((SolidColorBrush)view.Background).Color);
+                    ((Button)mini.FindName("Expand")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+                    // Manual Strong clean persists mode without popup; also check first-arm Interval honors fullscreen defer
+                    page.Pause();
+                    page.Find<RadioButton>("TriggerInterval").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    fullscreen = true;
+                    elapsed = Stopwatch.Frequency * 350;
+                    arm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Need(executed == 5 && page.Find<TextBlock>("Next").Text == "全屏避让中",
+                        "First interval arm bypassed fullscreen defer.");
+                    fullscreen = false;
+                    page.Pause();
                     page.Find<Button>("Clean").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    WaitFor(() => executed == 6 && actual == CleanMode.Strong);
+                    WaitFor(() => executed == 6 && actual == CleanMode.Strong && page.Find<Button>("Clean").IsEnabled);
+                    Need(Settings.Load(settingsPath).Mode == CleanMode.Strong, "Manual clean did not persist selected mode.");
                 }
                 finally { view.Close(); }
             }
