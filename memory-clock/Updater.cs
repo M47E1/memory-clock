@@ -82,7 +82,7 @@ namespace MemoryClock
             get
             {
                 Version raw = Assembly.GetExecutingAssembly().GetName().Version;
-                return Normalize(raw ?? new Version(1, 6, 0, 0));
+                return Normalize(raw ?? new Version(1, 6, 1, 0));
             }
         }
 

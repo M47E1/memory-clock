@@ -86,10 +86,10 @@ namespace MemoryClock
 
         private static void CheckUpdater(string output)
         {
-            Need(Updater.CurrentDisplayVersion == "v1.6.0", "Unexpected assembly version: " + Updater.CurrentDisplayVersion);
-            Need(Updater.IsNewer(Updater.ParseReleaseVersion("v1.6.1"), new Version(1, 6, 0, 0)), "Newer release tag was not detected.");
-            Need(!Updater.IsNewer(Updater.ParseReleaseVersion("v1.6.0"), new Version(1, 6, 0, 0)), "Same release tag triggered update.");
-            Need(!Updater.IsNewer(Updater.ParseReleaseVersion("v1.5.9"), new Version(1, 6, 0, 0)), "Older release tag triggered downgrade.");
+            Need(Updater.CurrentDisplayVersion == "v1.6.1", "Unexpected assembly version: " + Updater.CurrentDisplayVersion);
+            Need(Updater.IsNewer(Updater.ParseReleaseVersion("v1.6.2"), new Version(1, 6, 1, 0)), "Newer release tag was not detected.");
+            Need(!Updater.IsNewer(Updater.ParseReleaseVersion("v1.6.1"), new Version(1, 6, 1, 0)), "Same release tag triggered update.");
+            Need(!Updater.IsNewer(Updater.ParseReleaseVersion("v1.6.0"), new Version(1, 6, 1, 0)), "Older release tag triggered downgrade.");
 
             Need(Updater.IsOfficialAssetUrl("https://github.com/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip"),
                 "Official GitHub portable asset URL was rejected.");
@@ -111,11 +111,11 @@ namespace MemoryClock
 
             string shaGood = new string('a', 64);
             string validJson = "{\"tag_name\":\"v1.7.0\",\"html_url\":\"https://github.com/M47E1/memory-clock/releases/tag/v1.7.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{\"name\":\"MemoryClock-portable.zip\",\"browser_download_url\":\"https://github.com/M47E1/memory-clock/releases/download/v1.7.0/MemoryClock-portable.zip\",\"size\":250000,\"digest\":\"sha256:" + shaGood + "\"}]}";
-            UpdateInfo parsed = Updater.ParseReleaseJson(validJson, new Version(1, 6, 0, 0));
+            UpdateInfo parsed = Updater.ParseReleaseJson(validJson, new Version(1, 6, 1, 0));
             Need(parsed != null && parsed.DisplayVersion == "v1.7.0" && parsed.ExpectedSha256 == shaGood, "Valid release JSON was not parsed.");
             Need(Updater.ParseReleaseJson(validJson, new Version(1, 7, 0, 0)) == null, "Already-latest release returned an update.");
-            Need(Updater.ParseReleaseJson(validJson.Replace("\"draft\":false", "\"draft\":true"), new Version(1, 6, 0, 0)) == null, "Draft release was accepted.");
-            Need(Updater.ParseReleaseJson(validJson.Replace("\"prerelease\":false", "\"prerelease\":true"), new Version(1, 6, 0, 0)) == null, "Prerelease was accepted.");
+            Need(Updater.ParseReleaseJson(validJson.Replace("\"draft\":false", "\"draft\":true"), new Version(1, 6, 1, 0)) == null, "Draft release was accepted.");
+            Need(Updater.ParseReleaseJson(validJson.Replace("\"prerelease\":false", "\"prerelease\":true"), new Version(1, 6, 1, 0)) == null, "Prerelease was accepted.");
 
             string sandbox = Path.Combine(output, "updater-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(sandbox);
@@ -129,11 +129,11 @@ namespace MemoryClock
                     using (var w = new StreamWriter(entry.Open())) w.Write("bad");
                 }
                 bool blocked = false;
-                try { Updater.ExtractVerifiedPackage(evilZip, Path.Combine(sandbox, "s1"), new Version(1, 5, 0, 0), new Version(1, 6, 0, 0)); }
+                try { Updater.ExtractVerifiedPackage(evilZip, Path.Combine(sandbox, "s1"), new Version(1, 6, 0, 0), new Version(1, 6, 1, 0)); }
                 catch (InvalidDataException) { blocked = true; }
                 Need(blocked, "Zip-slip entry was not rejected.");
 
-                // Valid portable zip containing current VerifyClock.exe (1.6.0.0)
+                // Valid portable zip containing current VerifyClock.exe (1.6.1.0)
                 string goodZip = Path.Combine(sandbox, "good.zip");
                 string selfExe = System.Reflection.Assembly.GetExecutingAssembly().Location;
                 using (var archive = ZipFile.Open(goodZip, ZipArchiveMode.Create))
@@ -142,25 +142,25 @@ namespace MemoryClock
 
                 // Bad digest must be rejected
                 bool badHashBlocked = false;
-                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "sBadHash"), new Version(1, 5, 0, 0), new Version(1, 6, 0, 0), new string('0', 64)); }
+                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "sBadHash"), new Version(1, 6, 0, 0), new Version(1, 6, 1, 0), new string('0', 64)); }
                 catch (InvalidDataException) { badHashBlocked = true; }
                 Need(badHashBlocked, "Mismatched SHA-256 digest was accepted.");
 
                 // Same version must be rejected to prevent update loops
                 bool sameBlocked = false;
-                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "s2"), new Version(1, 6, 0, 0), new Version(1, 6, 0, 0), actualSha); }
+                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "s2"), new Version(1, 6, 1, 0), new Version(1, 6, 1, 0), actualSha); }
                 catch (InvalidOperationException) { sameBlocked = true; }
                 Need(sameBlocked, "Same-version package was allowed to overwrite.");
 
-                // Mismatched expected tag version (1.7.0.0 tag vs 1.6.0.0 binary) must be rejected
+                // Mismatched expected tag version (1.7.0.0 tag vs 1.6.1.0 binary) must be rejected
                 bool mismatchBlocked = false;
-                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "sMis"), new Version(1, 5, 0, 0), new Version(1, 7, 0, 0), actualSha); }
+                try { Updater.ExtractVerifiedPackage(goodZip, Path.Combine(sandbox, "sMis"), new Version(1, 6, 0, 0), new Version(1, 7, 0, 0), actualSha); }
                 catch (InvalidOperationException) { mismatchBlocked = true; }
                 Need(mismatchBlocked, "Binary version mismatching release tag was allowed.");
 
-                // Older baseline (1.5.0.0) accepts verified 1.6.0.0 package matching tag and SHA-256
+                // Older baseline (1.6.0.0) accepts verified 1.6.1.0 package matching tag and SHA-256
                 string stageOk = Path.Combine(sandbox, "s3");
-                Updater.ExtractVerifiedPackage(goodZip, stageOk, new Version(1, 5, 0, 0), new Version(1, 6, 0, 0), actualSha);
+                Updater.ExtractVerifiedPackage(goodZip, stageOk, new Version(1, 6, 0, 0), new Version(1, 6, 1, 0), actualSha);
                 Need(File.Exists(Path.Combine(stageOk, "MemoryClock.exe")), "Verified package did not extract MemoryClock.exe.");
             }
             finally { Directory.Delete(sandbox, true); }

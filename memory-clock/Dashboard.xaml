@@ -453,7 +453,7 @@
             </Border>
 
             <DockPanel Grid.Row="3" Margin="2,10,2,0">
-                <Button x:Name="UpdateButton" DockPanel.Dock="Right" Content="v1.6.0 · 检查更新"
+                <Button x:Name="UpdateButton" DockPanel.Dock="Right" Content="v1.6.1 · 检查更新"
                         MinHeight="0" Padding="7,1.5" Margin="10,0,0,0" FontSize="11" FontWeight="SemiBold"
                         Background="Transparent" Foreground="#89A19E" VerticalAlignment="Center"
                         AutomationProperties.Name="检查或一键更新" ToolTip="点击检查 GitHub 最新版本（已默认开启启动自动更新）"/>
