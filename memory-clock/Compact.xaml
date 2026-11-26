@@ -165,27 +165,50 @@
             <Grid Grid.Row="1" Width="74" Height="66" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Image x:Name="Dial" Stretch="Uniform" IsHitTestVisible="False"/>
                 <Button x:Name="Clean" Style="{StaticResource CoreButton}" Width="38" Height="38"
-                        VerticalAlignment="Top" Margin="0,16.5,0,0" FontSize="11.5" FontWeight="SemiBold"
+                        VerticalAlignment="Top" Margin="0,16.5,0,0" FontSize="10.5" FontWeight="SemiBold"
                         Content="Clean" AutomationProperties.Name="Clean，立即清理内存">
                     <Button.ContentTemplate><DataTemplate>
-                        <TextBlock Text="{Binding}" HorizontalAlignment="Center" Foreground="#F4FBF5" Margin="0,12,0,0"
-                                   FontSize="11.5" FontWeight="SemiBold" LineHeight="13" LineStackingStrategy="BlockLineHeight"/>
+                        <TextBlock Text="{Binding}" HorizontalAlignment="Center" Foreground="#F4FBF5" Margin="0,19,0,0"
+                                   FontSize="10.5" FontWeight="SemiBold" LineHeight="11.5" LineStackingStrategy="BlockLineHeight"/>
                     </DataTemplate></Button.ContentTemplate>
                 </Button>
-                <Viewbox Width="11.5" Height="10" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,22,0,0"
-                         Stretch="Uniform" IsHitTestVisible="False">
-                    <Canvas x:Name="RocketGroup" Width="14" Height="12">
-                        <Canvas.RenderTransform><TranslateTransform x:Name="RocketShift"/></Canvas.RenderTransform>
+                <Viewbox Width="17" Height="20" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,18,0,0"
+                         Stretch="Uniform" IsHitTestVisible="False" SnapsToDevicePixels="False">
+                    <Canvas x:Name="RocketGroup" Width="24" Height="28" RenderTransformOrigin="0.5,0.5">
+                        <Canvas.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="RocketScale" ScaleX="1" ScaleY="1" CenterX="12" CenterY="14"/>
+                                <TranslateTransform x:Name="RocketShift"/>
+                            </TransformGroup>
+                        </Canvas.RenderTransform>
+                        <Canvas x:Name="RocketFlameGroup" Width="24" Height="28" Opacity="0">
+                            <Canvas.RenderTransform>
+                                <ScaleTransform x:Name="RocketFlameScale" ScaleX="0.8" ScaleY="0.6" CenterX="12" CenterY="21.2"/>
+                            </Canvas.RenderTransform>
+                            <Path Fill="#FF983E" Data="M 8.8,21.0 C 8.0,24.2 10.0,26.8 12.0,28.4 C 14.0,26.8 16.0,24.2 15.2,21.0 Z"/>
+                            <Path Fill="#FFD466" Data="M 9.7,21.0 C 9.2,23.5 10.7,25.5 12.0,26.8 C 13.3,25.5 14.8,23.5 14.3,21.0 Z"/>
+                            <Path Fill="#FFF8DC" Data="M 10.6,21.0 C 10.4,22.8 11.2,24.2 12.0,25.0 C 12.8,24.2 13.6,22.8 13.4,21.0 Z"/>
+                        </Canvas>
+                        <Ellipse x:Name="RocketSparkL" Canvas.Left="7.4" Canvas.Top="21.8" Width="2.1" Height="2.1" Fill="#FFD770" Opacity="0">
+                            <Ellipse.RenderTransform><TranslateTransform x:Name="RocketSparkLShift"/></Ellipse.RenderTransform>
+                        </Ellipse>
+                        <Ellipse x:Name="RocketSparkR" Canvas.Left="14.5" Canvas.Top="21.8" Width="2.1" Height="2.1" Fill="#FFD770" Opacity="0">
+                            <Ellipse.RenderTransform><TranslateTransform x:Name="RocketSparkRShift"/></Ellipse.RenderTransform>
+                        </Ellipse>
+                        <Path x:Name="RocketFins" Fill="{Binding Foreground, ElementName=DialPercent}" Opacity="0.82"
+                              Data="M 7.3,13.2 C 4.0,14.8 2.6,17.8 3.1,21.1 L 7.8,18.7 Z M 16.7,13.2 C 20.0,14.8 21.4,17.8 20.9,21.1 L 16.2,18.7 Z"/>
+                        <Path Fill="#2C4741" Data="M 8.9,18.6 L 15.1,18.6 L 15.9,21.2 L 8.1,21.2 Z"/>
                         <Path x:Name="RocketHull" Fill="{Binding Foreground, ElementName=DialPercent}"
-                              Stroke="{Binding Foreground, ElementName=DialPercent}" StrokeThickness="1.2" StrokeLineJoin="Round"
-                              Data="M 11.0,1.4 C 8.5,1.6 6.2,3.1 4.6,5.5 L 7.7,8.6 C 10.1,7.0 11.6,4.7 11.8,2.2 C 11.8,1.7 11.5,1.4 11.0,1.4 Z"/>
-                        <Path x:Name="RocketFins" Stroke="{Binding Foreground, ElementName=DialPercent}" StrokeThickness="1.15"
-                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                              Data="M 4.6,5.5 L 2.2,6.0 L 3.8,7.6 M 7.7,8.6 L 7.2,11.0 L 5.6,9.4"/>
-                        <Ellipse Canvas.Left="7.4" Canvas.Top="3.4" Width="2.1" Height="2.1" Fill="#0C1715"/>
-                        <Path x:Name="RocketFlame" Opacity="0" Stroke="#F4C86A" StrokeThickness="1.35"
-                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                              Data="M 4.4,8.8 L 1.7,11.3 M 5.4,9.6 L 3.6,11.4"/>
+                              Data="M 12.0,1.0 C 15.8,4.0 17.4,9.2 16.5,16.7 L 15.0,19.1 L 9.0,19.1 L 7.5,16.7 C 6.6,9.2 8.2,4.0 12.0,1.0 Z"/>
+                        <Path Fill="#FFFFFF" Opacity="0.34"
+                              Data="M 12.0,1.6 C 9.0,4.5 7.8,9.2 8.4,16.1 L 10.6,16.1 C 10.1,9.9 10.8,5.3 12.0,1.6 Z"/>
+                        <Path Fill="#091513" Opacity="0.20"
+                              Data="M 12.0,1.6 C 15.0,4.5 16.2,9.2 15.6,16.1 L 13.4,16.1 C 13.9,9.9 13.2,5.3 12.0,1.6 Z"/>
+                        <Path Stroke="#0C1715" Opacity="0.45" StrokeThickness="1.0" Data="M 8.4,6.4 Q 12.0,7.5 15.6,6.4"/>
+                        <Path Stroke="#FFFFFF" Opacity="0.52" StrokeThickness="1.25" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M 12.0,15.2 L 12.0,20.0"/>
+                        <Ellipse Canvas.Left="9.0" Canvas.Top="8.1" Width="6.0" Height="6.0" Fill="#0B1715"/>
+                        <Ellipse Canvas.Left="9.9" Canvas.Top="9.0" Width="4.2" Height="4.2" Fill="#295450"/>
+                        <Ellipse Canvas.Left="10.5" Canvas.Top="9.5" Width="1.5" Height="1.5" Fill="#EBFFF9"/>
                     </Canvas>
                 </Viewbox>
                 <TextBlock x:Name="DialPercent" Text="—" Foreground="#C8FA8E" FontSize="10" FontWeight="Bold"

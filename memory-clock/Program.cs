@@ -145,6 +145,292 @@ namespace MemoryClock
         }
     }
 
+    internal sealed class RocketRig
+    {
+        private readonly Canvas group, flameGroup;
+        private readonly TranslateTransform shift, sparkLShift, sparkRShift;
+        private readonly ScaleTransform bodyScale, flameScale;
+        private readonly UIElement sparkL, sparkR;
+        private readonly System.Windows.Shapes.Path hull, fins;
+        private int generation;
+        private bool launching, hovered, pressed;
+
+        private RocketRig(Canvas group, TranslateTransform shift, ScaleTransform bodyScale,
+            Canvas flameGroup, ScaleTransform flameScale,
+            UIElement sparkL, TranslateTransform sparkLShift,
+            UIElement sparkR, TranslateTransform sparkRShift,
+            System.Windows.Shapes.Path hull, System.Windows.Shapes.Path fins)
+        {
+            this.group = group; this.shift = shift; this.bodyScale = bodyScale;
+            this.flameGroup = flameGroup; this.flameScale = flameScale;
+            this.sparkL = sparkL; this.sparkLShift = sparkLShift;
+            this.sparkR = sparkR; this.sparkRShift = sparkRShift;
+            this.hull = hull; this.fins = fins;
+        }
+
+        internal static RocketRig Attach(FrameworkElement root, string prefix)
+        {
+            return new RocketRig(
+                (Canvas)root.FindName(prefix + "Group"),
+                (TranslateTransform)root.FindName(prefix + "Shift"),
+                (ScaleTransform)root.FindName(prefix + "Scale"),
+                (Canvas)root.FindName(prefix + "FlameGroup"),
+                (ScaleTransform)root.FindName(prefix + "FlameScale"),
+                (UIElement)root.FindName(prefix + "SparkL"),
+                (TranslateTransform)root.FindName(prefix + "SparkLShift"),
+                (UIElement)root.FindName(prefix + "SparkR"),
+                (TranslateTransform)root.FindName(prefix + "SparkRShift"),
+                (System.Windows.Shapes.Path)root.FindName(prefix + "Hull"),
+                (System.Windows.Shapes.Path)root.FindName(prefix + "Fins"));
+        }
+
+        internal bool IsComplete
+        {
+            get
+            {
+                return group != null && shift != null && bodyScale != null &&
+                    flameGroup != null && flameScale != null &&
+                    sparkL != null && sparkR != null && hull != null && fins != null;
+            }
+        }
+
+        internal void SetAccent(Brush brush)
+        {
+            if (hull != null) hull.Fill = brush;
+            if (fins != null) fins.Fill = brush;
+        }
+
+        internal void ApplyStaticHoverPreview()
+        {
+            if (!IsComplete) return;
+            Reset();
+            shift.Y = -1.3;
+            bodyScale.ScaleX = 1.05;
+            bodyScale.ScaleY = 1.05;
+            flameGroup.Opacity = 0.85;
+            flameScale.ScaleX = 0.82;
+            flameScale.ScaleY = 0.78;
+        }
+
+        internal void Reset()
+        {
+            generation++;
+            launching = false;
+            hovered = false;
+            pressed = false;
+            if (!IsComplete) return;
+            shift.BeginAnimation(TranslateTransform.XProperty, null);
+            shift.BeginAnimation(TranslateTransform.YProperty, null);
+            bodyScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            bodyScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            group.BeginAnimation(UIElement.OpacityProperty, null);
+            flameGroup.BeginAnimation(UIElement.OpacityProperty, null);
+            flameScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            flameScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            sparkL.BeginAnimation(UIElement.OpacityProperty, null);
+            sparkR.BeginAnimation(UIElement.OpacityProperty, null);
+            sparkLShift.BeginAnimation(TranslateTransform.XProperty, null);
+            sparkLShift.BeginAnimation(TranslateTransform.YProperty, null);
+            sparkRShift.BeginAnimation(TranslateTransform.XProperty, null);
+            sparkRShift.BeginAnimation(TranslateTransform.YProperty, null);
+            shift.X = 0; shift.Y = 0;
+            bodyScale.ScaleX = 1; bodyScale.ScaleY = 1;
+            group.Opacity = 1;
+            flameGroup.Opacity = 0;
+            flameScale.ScaleX = 0.8; flameScale.ScaleY = 0.6;
+            sparkL.Opacity = 0; sparkR.Opacity = 0;
+            sparkLShift.X = 0; sparkLShift.Y = 0;
+            sparkRShift.X = 0; sparkRShift.Y = 0;
+        }
+
+        internal void SetHover(bool isHovered, bool animate)
+        {
+            hovered = isHovered;
+            if (!isHovered) pressed = false;
+            if (!IsComplete || launching) return;
+            if (!animate || !SystemParameters.ClientAreaAnimation)
+            {
+                if (!hovered) Reset();
+                return;
+            }
+            if (pressed) return;
+            if (hovered) EnterHoverPilot();
+            else EaseToIdle();
+        }
+
+        internal void SetPressed(bool isPressed, bool animate)
+        {
+            pressed = isPressed;
+            if (!IsComplete || launching) return;
+            if (!animate || !SystemParameters.ClientAreaAnimation)
+            {
+                if (!pressed && !hovered) Reset();
+                return;
+            }
+            if (pressed) EnterPressCharge();
+            else if (hovered) EnterHoverPilot();
+            else EaseToIdle();
+        }
+
+        private void EnterHoverPilot()
+        {
+            generation++;
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var xTremor = new DoubleAnimation(-0.35, 0.35, TimeSpan.FromMilliseconds(70))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            var yHover = new DoubleAnimation(-1.1, -1.55, TimeSpan.FromMilliseconds(115))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            shift.BeginAnimation(TranslateTransform.XProperty, xTremor);
+            shift.BeginAnimation(TranslateTransform.YProperty, yHover);
+            bodyScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.05, TimeSpan.FromMilliseconds(150)) { EasingFunction = ease });
+            bodyScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1.05, TimeSpan.FromMilliseconds(150)) { EasingFunction = ease });
+            group.BeginAnimation(UIElement.OpacityProperty, null);
+            group.Opacity = 1;
+
+            var flamePulse = new DoubleAnimation(0.58, 0.90, TimeSpan.FromMilliseconds(105))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            var flameLen = new DoubleAnimation(0.56, 0.84, TimeSpan.FromMilliseconds(90))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            flameGroup.BeginAnimation(UIElement.OpacityProperty, flamePulse);
+            flameScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.78, TimeSpan.FromMilliseconds(120)) { EasingFunction = ease });
+            flameScale.BeginAnimation(ScaleTransform.ScaleYProperty, flameLen);
+        }
+
+        private void EnterPressCharge()
+        {
+            generation++;
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var xRumble = new DoubleAnimation(-0.62, 0.62, TimeSpan.FromMilliseconds(45))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            shift.BeginAnimation(TranslateTransform.XProperty, xRumble);
+            shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(1.3, TimeSpan.FromMilliseconds(85)) { EasingFunction = ease });
+            bodyScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.07, TimeSpan.FromMilliseconds(85)) { EasingFunction = ease });
+            bodyScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.94, TimeSpan.FromMilliseconds(85)) { EasingFunction = ease });
+
+            flameGroup.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1.0, TimeSpan.FromMilliseconds(70)));
+            flameScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.08, TimeSpan.FromMilliseconds(85)) { EasingFunction = ease });
+            var flare = new DoubleAnimation(1.12, 1.38, TimeSpan.FromMilliseconds(60))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            flameScale.BeginAnimation(ScaleTransform.ScaleYProperty, flare);
+        }
+
+        private void EaseToIdle()
+        {
+            int myGen = ++generation;
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var dur = TimeSpan.FromMilliseconds(160);
+            var endAnim = new DoubleAnimation(0, dur) { EasingFunction = ease };
+            endAnim.Completed += (sender, evt) => { if (generation == myGen && !launching && !hovered && !pressed) Reset(); };
+            shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, dur) { EasingFunction = ease });
+            shift.BeginAnimation(TranslateTransform.YProperty, endAnim);
+            bodyScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.0, dur) { EasingFunction = ease });
+            bodyScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1.0, dur) { EasingFunction = ease });
+            flameGroup.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.0, TimeSpan.FromMilliseconds(130)));
+            flameScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.75, dur));
+            flameScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.4, dur));
+        }
+
+        internal void Launch(Func<bool> shouldRepeat, Func<bool> isStillHovered)
+        {
+            if (!IsComplete || launching || !SystemParameters.ClientAreaAnimation) return;
+            launching = true;
+            pressed = false;
+            int myGen = ++generation;
+
+            var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
+            var duration = TimeSpan.FromMilliseconds(880);
+
+            var xAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            xAnim.KeyFrames.Add(new LinearDoubleKeyFrame(-0.75, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(35))));
+            xAnim.KeyFrames.Add(new LinearDoubleKeyFrame(0.75, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(75))));
+            xAnim.KeyFrames.Add(new LinearDoubleKeyFrame(-0.4, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(110))));
+            xAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(180)), easeOut));
+            xAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0, KeyTime.FromTimeSpan(duration)));
+
+            var yAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.8, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(110)), easeOut));
+            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(-18.5, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
+            yAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(11.5, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(495))));
+            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var sxAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            sxAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.08, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(110)), easeOut));
+            sxAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.88, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
+            sxAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.92, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(495))));
+            sxAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var syAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            syAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.92, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(110)), easeOut));
+            syAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.12, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(320)), easeOut));
+            syAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.92, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
+            syAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.92, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(495))));
+            syAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var opAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            opAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(280))));
+            opAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450)), easeIn));
+            opAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(505))));
+            opAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var flameOp = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            flameOp.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(60))));
+            flameOp.KeyFrames.Add(new LinearDoubleKeyFrame(0.95, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(330))));
+            flameOp.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450)), easeIn));
+            flameOp.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(630))));
+            flameOp.KeyFrames.Add(new LinearDoubleKeyFrame(0.55, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(730))));
+            flameOp.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var flameSy = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            flameSy.KeyFrames.Add(new EasingDoubleKeyFrame(1.55, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(110)), easeOut));
+            flameSy.KeyFrames.Add(new EasingDoubleKeyFrame(2.05, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(300)), easeOut));
+            flameSy.KeyFrames.Add(new EasingDoubleKeyFrame(0.5, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450)), easeIn));
+            flameSy.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.65, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(630))));
+            flameSy.KeyFrames.Add(new EasingDoubleKeyFrame(0.3, KeyTime.FromTimeSpan(duration), easeOut));
+
+            var flameSx = new DoubleAnimationUsingKeyFrames { Duration = duration };
+            flameSx.KeyFrames.Add(new EasingDoubleKeyFrame(1.16, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(110)), easeOut));
+            flameSx.KeyFrames.Add(new EasingDoubleKeyFrame(0.95, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
+            flameSx.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.78, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(630))));
+            flameSx.KeyFrames.Add(new EasingDoubleKeyFrame(0.75, KeyTime.FromTimeSpan(duration), easeOut));
+
+            // Twin launch exhaust sparks drifting down-outward at ignition
+            var sparkDur = TimeSpan.FromMilliseconds(420);
+            var sparkOp = new DoubleAnimationUsingKeyFrames { Duration = sparkDur };
+            sparkOp.KeyFrames.Add(new LinearDoubleKeyFrame(0.95, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(95))));
+            sparkOp.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(sparkDur), easeOut));
+            sparkL.BeginAnimation(UIElement.OpacityProperty, sparkOp);
+            sparkR.BeginAnimation(UIElement.OpacityProperty, sparkOp);
+            sparkLShift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, -4.8, sparkDur) { EasingFunction = easeOut });
+            sparkLShift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, 6.2, sparkDur) { EasingFunction = easeOut });
+            sparkRShift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, 4.8, sparkDur) { EasingFunction = easeOut });
+            sparkRShift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, 6.2, sparkDur) { EasingFunction = easeOut });
+
+            yAnim.Completed += (sender, evt) =>
+            {
+                if (generation != myGen) return;
+                launching = false;
+                if (shouldRepeat())
+                {
+                    Launch(shouldRepeat, isStillHovered);
+                    return;
+                }
+                bool stillHover = isStillHovered();
+                Reset();
+                if (stillHover) SetHover(true, true);
+            };
+
+            shift.BeginAnimation(TranslateTransform.XProperty, xAnim);
+            shift.BeginAnimation(TranslateTransform.YProperty, yAnim);
+            bodyScale.BeginAnimation(ScaleTransform.ScaleXProperty, sxAnim);
+            bodyScale.BeginAnimation(ScaleTransform.ScaleYProperty, syAnim);
+            group.BeginAnimation(UIElement.OpacityProperty, opAnim);
+            flameGroup.BeginAnimation(UIElement.OpacityProperty, flameOp);
+            flameScale.BeginAnimation(ScaleTransform.ScaleXProperty, flameSx);
+            flameScale.BeginAnimation(ScaleTransform.ScaleYProperty, flameSy);
+        }
+    }
+
     internal sealed class Dashboard : IDisposable
     {
         internal readonly Window View;
@@ -175,8 +461,10 @@ namespace MemoryClock
         private readonly Button arm, run, updateButton;
         private readonly StartupEntry startupEntry;
         private readonly bool withTray;
-        private bool closing, busy, failed, fullscreenDeferred, compactMenuOpen, compactRocketLaunching, dashboardRocketLaunching;
+        private bool closing, busy, failed, fullscreenDeferred, compactMenuOpen;
         private bool checkingUpdate, installingUpdate, updateUpToDate, pendingAutoInstall;
+        private readonly RocketRig dashboardRocket;
+        private RocketRig compactRocket;
         private UpdateInfo availableUpdate;
         private string updateError;
         private Settings settings;
@@ -209,12 +497,17 @@ namespace MemoryClock
             using (Stream layout = typeof(Dashboard).Assembly.GetManifestResourceStream("MemoryClock.Dashboard"))
                 View = (Window)XamlReader.Load(layout);
             View.SourceInitialized += (sender, evt) => WindowCaption.Apply(View);
-            PropertyChangedEventHandler contrastChanged = (sender, evt) =>
+            PropertyChangedEventHandler systemChanged = (sender, evt) =>
             {
                 if (evt.PropertyName == "HighContrast") WindowCaption.Apply(View);
+                if (evt.PropertyName == "ClientAreaAnimation" && !SystemParameters.ClientAreaAnimation)
+                {
+                    if (dashboardRocket != null) dashboardRocket.Reset();
+                    if (compactRocket != null) compactRocket.Reset();
+                }
             };
-            SystemParameters.StaticPropertyChanged += contrastChanged;
-            View.Closed += (sender, evt) => SystemParameters.StaticPropertyChanged -= contrastChanged;
+            SystemParameters.StaticPropertyChanged += systemChanged;
+            View.Closed += (sender, evt) => SystemParameters.StaticPropertyChanged -= systemChanged;
 
             seconds = Find<TextBox>("Seconds");
             triggerUnit = Find<TextBlock>("TriggerUnit");
@@ -246,7 +539,25 @@ namespace MemoryClock
             arm.Click += (sender, evt) => ToggleSchedule();
             run.Click += (sender, evt) => ManualClean();
             updateButton.Click += (sender, evt) => TriggerUpdateAction();
-            Find<Button>("Compact").Click += (sender, evt) => ShowCompact();
+            var compactButton = Find<Button>("Compact");
+            compactButton.Click += (sender, evt) => ShowCompact();
+            dashboardRocket = RocketRig.Attach(View, "MiniRocket");
+            Action syncDashHover = () => dashboardRocket.SetHover(
+                compactButton.IsMouseOver || (run.IsEnabled && run.IsMouseOver), withTray);
+            compactButton.MouseEnter += (sender, evt) => syncDashHover();
+            compactButton.MouseLeave += (sender, evt) => syncDashHover();
+            compactButton.PreviewMouseLeftButtonDown += (sender, evt) => dashboardRocket.SetPressed(true, withTray);
+            compactButton.PreviewMouseLeftButtonUp += (sender, evt) => dashboardRocket.SetPressed(false, withTray);
+            compactButton.MouseMove += (sender, evt) => { if (evt.LeftButton == MouseButtonState.Pressed) dashboardRocket.SetPressed(compactButton.IsPressed, withTray); };
+            compactButton.LostMouseCapture += (sender, evt) => dashboardRocket.SetPressed(false, withTray);
+            run.MouseEnter += (sender, evt) => syncDashHover();
+            run.MouseLeave += (sender, evt) => syncDashHover();
+            run.PreviewMouseLeftButtonDown += (sender, evt) => { if (run.IsEnabled) dashboardRocket.SetPressed(true, withTray); };
+            run.PreviewMouseLeftButtonUp += (sender, evt) => dashboardRocket.SetPressed(false, withTray);
+            run.MouseMove += (sender, evt) => { if (evt.LeftButton == MouseButtonState.Pressed) dashboardRocket.SetPressed(run.IsEnabled && run.IsPressed, withTray); };
+            run.LostMouseCapture += (sender, evt) => dashboardRocket.SetPressed(false, withTray);
+            run.IsEnabledChanged += (sender, evt) => { if (!run.IsEnabled) syncDashHover(); };
+            View.StateChanged += (sender, evt) => { if (View.WindowState == WindowState.Minimized) dashboardRocket.Reset(); };
             Find<Button>("PageFileSettings").Click += (sender, evt) => OpenPageFileSettings();
 
             var memoryBlock = Find<Border>("MemoryBlock");
@@ -285,7 +596,7 @@ namespace MemoryClock
                 tray.ContextMenuStrip.Items.Add("退出", null, (sender, evt) => Exit());
                 tray.DoubleClick += (sender, evt) => ShowWindow();
                 tray.Visible = true;
-                View.Closing += (sender, evt) => { if (!closing) { evt.Cancel = true; View.Hide(); } };
+                View.Closing += (sender, evt) => { if (!closing) { evt.Cancel = true; dashboardRocket.Reset(); View.Hide(); } };
             }
             if (error != null) SetHint(error, true);
             Text("Permission", admin ? "已授权 · 关闭窗口后留在托盘" : "首次清理或启用自动清理时，需要管理员授权。");
@@ -884,11 +1195,7 @@ namespace MemoryClock
             meter.Value = p;
             meter.Foreground = DialArt.MeterBrush(fraction);
             Find<Image>("MiniDial").Source = DialArt.Draw(fraction);
-            Brush accent = DialArt.AccentBrush(fraction);
-            var miniHull = Find<System.Windows.Shapes.Path>("MiniRocketHull");
-            miniHull.Fill = accent;
-            miniHull.Stroke = accent;
-            Find<System.Windows.Shapes.Path>("MiniRocketFins").Stroke = accent;
+            dashboardRocket.SetAccent(DialArt.AccentBrush(fraction));
             Text("Available", measurement.HasValue ? Gb(measurement.Value.Available) : "—");
             Text("Physical", measurement.HasValue ? Gb(measurement.Value.Total) : "—");
             Text("Commit", measurement.HasValue ? Gb(measurement.Value.Committed) + " / " + Gb(measurement.Value.CommitLimit) : "—");
@@ -1029,10 +1336,17 @@ namespace MemoryClock
                         PersistQuietly();
                     }
                 };
+                compactRocket = RocketRig.Attach(compact, "Rocket");
                 var cleanButton = (Button)compact.FindName("Clean");
                 cleanButton.Click += (sender, evt) => ManualClean();
-                cleanButton.MouseEnter += (sender, evt) => NudgeCompactRocket(true);
-                cleanButton.MouseLeave += (sender, evt) => NudgeCompactRocket(false);
+                cleanButton.MouseEnter += (sender, evt) => { if (cleanButton.IsEnabled) compactRocket.SetHover(true, withTray); };
+                cleanButton.MouseLeave += (sender, evt) => compactRocket.SetHover(false, withTray);
+                cleanButton.PreviewMouseLeftButtonDown += (sender, evt) => { if (cleanButton.IsEnabled) compactRocket.SetPressed(true, withTray); };
+                cleanButton.PreviewMouseLeftButtonUp += (sender, evt) => compactRocket.SetPressed(false, withTray);
+                cleanButton.MouseMove += (sender, evt) => { if (evt.LeftButton == MouseButtonState.Pressed) compactRocket.SetPressed(cleanButton.IsEnabled && cleanButton.IsPressed, withTray); };
+                cleanButton.LostMouseCapture += (sender, evt) => compactRocket.SetPressed(false, withTray);
+                cleanButton.IsEnabledChanged += (sender, evt) => { if (!cleanButton.IsEnabled) compactRocket.SetHover(false, withTray); };
+                compact.StateChanged += (sender, evt) => { if (compact.WindowState == WindowState.Minimized && compactRocket != null) compactRocket.Reset(); };
                 ((Button)compact.FindName("Expand")).Click += (sender, evt) => ShowWindow();
 
                 compact.MouseEnter += (sender, evt) => ApplyCompactOpacity(true);
@@ -1053,8 +1367,8 @@ namespace MemoryClock
                 ((MenuItem)compact.FindName("MenuExpand")).Click += (sender, evt) => ShowWindow();
                 ((MenuItem)compact.FindName("MenuExit")).Click += (sender, evt) => Exit();
 
-                compact.Closing += (sender, evt) => { if (!closing) { evt.Cancel = true; compact.Hide(); } };
-                compact.Closed += (sender, evt) => { compactRocketLaunching = false; compact = null; };
+                compact.Closing += (sender, evt) => { if (!closing) { evt.Cancel = true; if (compactRocket != null) compactRocket.Reset(); compact.Hide(); } };
+                compact.Closed += (sender, evt) => { if (compactRocket != null) compactRocket.Reset(); compactRocket = null; compact = null; };
                 PaintCompact();
                 UpdateCompact();
                 ApplyCompactOpacity(false);
@@ -1065,125 +1379,31 @@ namespace MemoryClock
             }
             if (View.IsVisible)
             {
-                ResetRocket(Find<Canvas>("MiniRocketGroup"), Find<TranslateTransform>("MiniRocketShift"), Find<UIElement>("MiniRocketFlame"), false);
+                dashboardRocket.Reset();
                 View.Hide();
             }
             compact.Show();
             if (busy) TriggerRocketLaunch();
         }
 
-        private void ResetRocket(Canvas group, TranslateTransform shift, UIElement flame, bool isCompact)
-        {
-            if (isCompact) compactRocketLaunching = false; else dashboardRocketLaunching = false;
-            if (shift != null)
-            {
-                shift.BeginAnimation(TranslateTransform.XProperty, null);
-                shift.BeginAnimation(TranslateTransform.YProperty, null);
-                shift.X = 0; shift.Y = 0;
-            }
-            if (group != null) { group.BeginAnimation(UIElement.OpacityProperty, null); group.Opacity = 1; }
-            if (flame != null) { flame.BeginAnimation(UIElement.OpacityProperty, null); flame.Opacity = 0; }
-        }
-
-        private void NudgeCompactRocket(bool hover)
-        {
-            if (!withTray || compact == null || compactRocketLaunching) return;
-            var shift = (TranslateTransform)compact.FindName("RocketShift");
-            if (shift == null) return;
-            if (!SystemParameters.ClientAreaAnimation)
-            {
-                if (!hover)
-                {
-                    shift.BeginAnimation(TranslateTransform.XProperty, null);
-                    shift.BeginAnimation(TranslateTransform.YProperty, null);
-                    shift.X = 0; shift.Y = 0;
-                }
-                return;
-            }
-            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-            double targetX = hover ? 0.9 : 0.0;
-            double targetY = hover ? -0.9 : 0.0;
-            shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(targetX, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
-            shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(targetY, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
-        }
+        internal RocketRig CompactRocket { get { return compactRocket; } }
+        internal RocketRig DashboardRocket { get { return dashboardRocket; } }
 
         private void TriggerRocketLaunch()
         {
             if (!withTray || !SystemParameters.ClientAreaAnimation) return;
-            if (compact != null && compact.IsVisible)
+            if (compact != null && compact.IsVisible && compactRocket != null)
             {
-                LaunchRocket(
-                    (Canvas)compact.FindName("RocketGroup"),
-                    (TranslateTransform)compact.FindName("RocketShift"),
-                    (UIElement)compact.FindName("RocketFlame"),
-                    true);
+                compactRocket.Launch(
+                    () => !closing && busy && compact != null && compact.IsVisible && compact.WindowState != WindowState.Minimized && SystemParameters.ClientAreaAnimation,
+                    () => !closing && compact != null && compact.IsVisible && ((Button)compact.FindName("Clean")).IsEnabled && ((Button)compact.FindName("Clean")).IsMouseOver);
             }
             if (View.IsVisible && View.WindowState != WindowState.Minimized)
             {
-                LaunchRocket(
-                    Find<Canvas>("MiniRocketGroup"),
-                    Find<TranslateTransform>("MiniRocketShift"),
-                    Find<UIElement>("MiniRocketFlame"),
-                    false);
+                dashboardRocket.Launch(
+                    () => !closing && busy && View.IsVisible && View.WindowState != WindowState.Minimized && SystemParameters.ClientAreaAnimation,
+                    () => !closing && View.IsVisible && (Find<Button>("Compact").IsMouseOver || (run.IsEnabled && run.IsMouseOver)));
             }
-        }
-
-        private void LaunchRocket(Canvas group, TranslateTransform shift, UIElement flame, bool isCompact)
-        {
-            if (group == null || shift == null || flame == null) return;
-            if (isCompact ? compactRocketLaunching : dashboardRocketLaunching) return;
-            if (isCompact) compactRocketLaunching = true; else dashboardRocketLaunching = true;
-
-            var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
-            var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
-            var duration = TimeSpan.FromMilliseconds(820);
-
-            var xAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
-            xAnim.KeyFrames.Add(new EasingDoubleKeyFrame(-0.9, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(130)), easeOut));
-            xAnim.KeyFrames.Add(new EasingDoubleKeyFrame(6.8, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
-            xAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(-4.6, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(480))));
-            xAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(duration), easeOut));
-
-            var yAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
-            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.9, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(130)), easeOut));
-            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(-7.8, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(440)), easeIn));
-            yAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(5.2, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(480))));
-            yAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(duration), easeOut));
-
-            var opAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
-            opAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(260))));
-            opAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450)), easeIn));
-            opAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(500))));
-            opAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(duration), easeOut));
-
-            var flameAnim = new DoubleAnimationUsingKeyFrames { Duration = duration };
-            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(90))));
-            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(0.6, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(190))));
-            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(290))));
-            flameAnim.KeyFrames.Add(new LinearDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450))));
-            flameAnim.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(duration)));
-
-            xAnim.Completed += (sender, evt) =>
-            {
-                if (isCompact) compactRocketLaunching = false; else dashboardRocketLaunching = false;
-                if (closing) return;
-                bool stillVisible = isCompact
-                    ? (compact != null && compact.IsVisible)
-                    : (View.IsVisible && View.WindowState != WindowState.Minimized);
-                if (busy && stillVisible && SystemParameters.ClientAreaAnimation)
-                {
-                    LaunchRocket(group, shift, flame, isCompact);
-                    return;
-                }
-                ResetRocket(group, shift, flame, isCompact);
-                if (isCompact && compact != null && ((Button)compact.FindName("Clean")).IsMouseOver)
-                    NudgeCompactRocket(true);
-            };
-
-            shift.BeginAnimation(TranslateTransform.XProperty, xAnim);
-            shift.BeginAnimation(TranslateTransform.YProperty, yAnim);
-            group.BeginAnimation(UIElement.OpacityProperty, opAnim);
-            flame.BeginAnimation(UIElement.OpacityProperty, flameAnim);
         }
 
         private void ApplyCompactOpacity(bool animate)
@@ -1276,7 +1496,7 @@ namespace MemoryClock
         {
             if (compact != null && compact.IsVisible)
             {
-                ResetRocket((Canvas)compact.FindName("RocketGroup"), (TranslateTransform)compact.FindName("RocketShift"), (UIElement)compact.FindName("RocketFlame"), true);
+                if (compactRocket != null) compactRocket.Reset();
                 compact.Hide();
             }
             if (!View.IsVisible) View.Show();

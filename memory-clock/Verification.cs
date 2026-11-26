@@ -438,17 +438,21 @@ namespace MemoryClock
                         mini.Left == -10000 && mini.Top == -10000 && !mini.IsActive && !mini.Topmost,
                         "Compact window did not replace the dashboard offscreen at compact size.");
                     Need((string)clean.Content == "Clean" && clean.IsTabStop &&
-                        mini.FindName("RocketGroup") is Canvas && mini.FindName("RocketShift") is TranslateTransform &&
-                        mini.FindName("RocketFlame") is System.Windows.Shapes.Path &&
-                        page.Find<Canvas>("MiniRocketGroup") != null &&
+                        page.CompactRocket != null && page.CompactRocket.IsComplete &&
+                        page.DashboardRocket != null && page.DashboardRocket.IsComplete &&
                         ((TextBlock)mini.FindName("Used")).Text == "10.0" &&
                         ((TextBlock)mini.FindName("Free")).Text == "6.0" &&
                         ((TextBlock)mini.FindName("DialPercent")).Text == (.625).ToString("0%", System.Globalization.CultureInfo.InvariantCulture) &&
                         object.ReferenceEquals(((Image)mini.FindName("Dial")).Source, ring.Source) &&
                         ((TextBlock)mini.FindName("Status")).Text == "+2.0 GB" &&
                         ((Border)mini.FindName("CardRoot")).ToolTip.ToString().Contains("chrome"),
-                        "Compact view did not show shared reading, +2.0 GB freed badge, and top-3 tooltip.");
+                        "Compact view did not show shared reading, +2.0 GB freed badge, HD rocket rig, and top-3 tooltip.");
                     Capture((FrameworkElement)mini.Content, Path.Combine(output, "compact.png"), ((SolidColorBrush)view.Background).Color);
+                    page.CompactRocket.ApplyStaticHoverPreview();
+                    Refresh(mini);
+                    Capture((FrameworkElement)mini.Content, Path.Combine(output, "compact-hover.png"), ((SolidColorBrush)view.Background).Color);
+                    page.CompactRocket.Reset();
+                    Refresh(mini);
 
                     // Verify compact context menu toggles subtle opacity
                     var menuSubtle = (MenuItem)mini.FindName("MenuSubtle");
